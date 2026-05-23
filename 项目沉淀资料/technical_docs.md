@@ -460,3 +460,143 @@ val targetYaw = atan2(velocity.x, velocity.z).toDegrees() + 180f
    在 3D 场景中，只要 `attachments { ... }` 闭包里声明了组件，无论是否当前处于显示状态，如果获取不到该实体并对其进行妥善的隐藏或移除操作，它都会残留在场景中。必须确保不需要渲染时，关闭相关的 boolean 开关，或者确保实体池中只有一个唯一映射。
 3. **PICO 欧拉角单位**：
    `Quat.toEulerAngles()` 返回的 `yaw`, `pitch`, `roll` 属性，其实际单位通常是**度（Degrees）**。在代入 `kotlin.math.sin()` 或 `cos()` 进行数学计算前，必须先使用 `Math.toRadians()` 转换为弧度，否则会导致计算出的跟随位置发生极速且混乱的抖动。
+
+## Phase 5.3 技术交接文档：高频 Tracking 数据通路与 SpatialView 更新路径优化
+
+### 1. 阶段概述
+本阶段只处理第一批性能优化中的两个高频热点：
+- 去掉顶层 Compose 对 `HMD/Hand` 高频 tracking 流的直接订阅，避免整棵 `HomeStage()` 因 tracking 刷新而频繁重组。
+- 收缩 `SpatialView.update` 的职责边界，将输入事件消费和拍手检测从逐帧更新路径中移出，只保留必要的场景变换同步。
+
+本次改动刻意不触碰 AI 对话链路、模型装载流程、动画模块和行为系统状态机，以降低优化引发蝴蝶效应的风险。
+
+### 2. 核心架构与类说明
+
+#### 2.1 运行时缓存状态 (`HomeStageRuntimeState`)
+- 所在文件：[HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt)
+- 新增私有运行时类 `HomeStageRuntimeState`，集中持有以下字段：
+  - `loadedRobotModelEntity`
+  - `dialogueAttachmentEntity`
+  - `userInputAttachmentEntity`
+  - `latestHmdTrackingData`
+- 设计目的：
+  1. 将仅供 3D 更新路径使用的数据从 Compose state 中移出。
+  2. 保留 `HomeStage` 的现有业务逻辑和回调接口，避免重构扩散到 AI、输入或动作分发模块。
+  3. 让 `SpatialView.update` 直接读取最新 tracking 快照，而不是等待 Compose 重组后再刷新闭包捕获值。
+
+#### 2.2 高频 tracking 数据改为协程收集，不再驱动顶层重组
+- 旧逻辑：
+  1. `HMDTrackingProvider.dataFlow.collectAsState(...)`
+  2. `HandTrackingProvider.dataFlow.collectAsState(...)`
+  3. 每次 tracking 更新都会让 `HomeStage()` 重新组合
+- 新逻辑：
+  1. 在 `DisposableEffect` 中启动 provider
+  2. 通过协程 `collect` 把最新 HMD 数据写入 `runtimeState.latestHmdTrackingData`
+  3. 手部 tracking 流在协程里直接喂给 `HandClapDetector.processHandTrackingData(...)`
+  4. `onDispose` 中统一取消协程并停止 provider
+
+这样做的结果是：高频 tracking 仍然被消费，但不再通过 Compose state 通路传播。
+
+#### 2.3 控制器输入从逐帧 update 改为事件驱动
+- 所在文件：[HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt)
+- 旧逻辑：
+  1. 监听器只把 `ControllerActionData` 写入 `latestControllerAction`
+  2. `SpatialView.update` 每帧读取该值，再调用 `inputControllerManager.processControllerAction(...)`
+- 新逻辑：
+  1. `ControllerActionListener` 收到事件后，直接在主线程调用 `inputControllerManager.processControllerAction(action)`
+  2. 删除 `latestControllerAction` Compose state
+
+这样能减少每帧 update 中的业务判断，并保持长按、双击等边沿检测仍由原有 `InputControllerManager` 负责，不改其语义。
+
+#### 2.4 `SpatialView.update` 现在只保留必要的场景同步
+- 当前保留的内容：
+  1. 确保 `text` 和 `user_input_panel` 对应的附件实体被正确挂入 3D 渲染树
+  2. 根据最新 HMD 姿态同步输入面板位置
+  3. 同步 HMD 实体位姿
+  4. 同步对话气泡到机器人头顶位置
+- 已移出的内容：
+  1. 控制器输入事件分发
+  2. 拍手检测
+  3. 顶层 tracking state 驱动
+
+#### 2.5 语音输入状态改为低频可观察状态
+- 所在文件：[VoiceInputProvider.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/input/VoiceInputProvider.kt)
+- 将 `isActive` 改为 Compose 可观察状态。
+- 设计原因：
+  - 在旧实现中，录音面板的刷新有一部分依赖其他状态带来的“顺带重组”。
+  - 在移除高频 tracking 重组后，必须给录音 UI 一个真正独立、低频、语义正确的刷新源，否则 `voiceInputProvider.isListening()` 的界面变化可能丢失。
+
+### 3. SDK/框架避坑指南
+
+1. **不要把高频 tracking 流直接绑到顶层 Compose**：
+   在 Spatial 场景里，`HMD`、`Hand` 这类流通常会以很高频率更新。若在顶层 `@Composable` 中直接 `collectAsState()`，会把纯运行时姿态刷新放大成 UI 树重组，间接增加 `SpatialView` 和附件系统的额外工作量。
+2. **优化重组时，必须先盘点哪些 UI 原本依赖“顺带重组”**：
+   这类隐式依赖很容易被忽略。本次在 `VoiceInputProvider` 中补状态，就是为了避免移除 tracking 重组后录音态 UI 不再刷新。
+3. **`SpatialView.update` 适合作为同步层，不适合作为事件总线**：
+   能在事件监听器或 Flow 收集协程里消费的输入事件，应尽量在事件源头处理，不要每帧都再走一遍分发逻辑。
+
+### 4. 设计说明
+- 本次优化采用的是“缩窄高频路径”的保守策略，而不是大规模重构：
+  - 不动 `InputControllerManager` 的业务语义
+  - 不改 `HandClapDetector` 的检测逻辑
+  - 不改 `handleUserInput()`、AI、动作分发和情绪引擎
+  - 不改模型与附件的空间布局规则
+- 这样做的核心目的是在性能收益和功能稳定性之间做平衡，优先拿掉最明显的高频损耗点，同时把回归面控制在最小范围。
+
+### 5. 资源文件说明
+- 本阶段未新增资源文件。
+- 本阶段修改的源码文件：
+  - [HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt)
+  - [VoiceInputProvider.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/input/VoiceInputProvider.kt)
+
+## Phase 5.4 技术交接文档：`SpatialView.update` 触发机制回归修复
+
+### 1. 阶段概述
+本阶段处理的是一次由性能优化误判引起的基础功能回归：
+- 精灵跟随失效
+- 输入框不再跟随玩家
+- 输入框不能稳定保持朝向玩家
+
+问题不在 `FairyBehaviorSystem` 或 `LookAtComponent` 本身，而在于错误切断了 `HMD tracking -> Compose state -> SpatialView.update` 这条更新驱动链。
+
+### 2. 核心原因
+
+#### 2.1 `SpatialView.update` 不是独立帧循环
+根据 PICO Spatial SDK 文档，`SpatialView.update` 的触发条件是：
+1. `initial` 之后自动调用一次
+2. 当 `SpatialView` 相关 Compose state 发生变化时再次调用
+
+这意味着它本质上依赖 Compose/recomposition，而不是 ECS 那样稳定逐帧执行。
+
+#### 2.2 当前工程实际依赖 `HMD collectAsState()` 驱动场景同步
+在这个项目当前架构中，以下逻辑都依赖 `SpatialView.update`：
+1. 把最新 HMD tracking 数据写入场景中的 `hmdEntity`
+2. 根据 HMD 姿态实时计算输入框位置
+3. 修补和挂载输入框 attachment 实体
+4. 同步对话气泡到精灵头顶
+
+因此，当上个阶段把 `HMDTrackingProvider.dataFlow.collectAsState()` 改成普通运行时缓存后：
+1. tracking 数据虽然在变
+2. 但 Compose 不再因为 HMD 变化而重组
+3. `SpatialView.update` 触发频率骤降
+4. `hmdEntity` 的位置冻结
+5. `FairyBehaviorSystem` 读到的是过时 HMD 坐标
+6. 最终导致精灵跟随和输入框跟随全部失效
+
+### 3. 修复策略
+- 采用最小回滚策略，仅恢复 `HMDTrackingProvider.dataFlow.collectAsState(...)`
+- 保留较安全的两项优化：
+  - `ControllerActionListener` 直接消费控制器输入
+  - 拍手检测在 `HandTrackingProvider.dataFlow` 收集协程中处理
+
+### 4. 设计说明
+- 这次修复说明一个重要事实：
+  - 在当前工程还没有把 `HMD` 实体同步和输入框位置同步迁移到真正的帧级系统之前，`HMD collectAsState()` 不能被简单视作“可直接删除的高频重组源”
+- 如果未来还要继续优化这一点，必须先完成下面的架构迁移：
+  1. 将 `HMD` 实体位姿同步迁移到独立 ECS/System
+  2. 将输入框位置计算迁移到独立帧级更新逻辑
+  3. 将 attachment 修补与挂载逻辑改造成更稳定的生命周期管理
+  4. 在这些都完成后，才能彻底移除 HMD 高频 Compose 驱动
+
+### 5. 本阶段修改文件
+- [HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt)

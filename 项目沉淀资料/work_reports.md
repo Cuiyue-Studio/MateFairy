@@ -299,3 +299,68 @@
 ### 四、后续开发建议
 - 继续推进语音输入（ASR）接入，真正释放双手的空间交互能力。
 - 可考虑增加输入面板弹出/关闭时的过渡动画（如透明度渐变、缩放弹出），进一步提升细节质感。
+
+---
+
+## Phase 5.3 工作汇报：高频 Tracking 驱动与 SpatialView 更新路径优化（第一批）
+
+### 一、功能开发完成情况
+1. **创建独立优化分支**：
+   - 新建并切换到了分支 `perf/stage-update`。
+   - 在开始改动前先审查了当前工作区状态，确认大量未跟踪文件主要为历史调试脚本、反射探测测试和 dump 产物，本次优化未触碰这些文件。
+2. **完成第一个优化点：去除顶层 Compose 对高频 tracking 数据的直接订阅**：
+   - 修改文件：[HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt)
+   - 移除了 `HMDTrackingProvider.dataFlow.collectAsState(...)` 和 `HandTrackingProvider.dataFlow.collectAsState(...)` 对顶层 `HomeStage()` 的高频驱动。
+   - 新增 `HomeStageRuntimeState`，将 `latestHmdTrackingData`、`loadedRobotModelEntity`、附件实体引用等转为运行时缓存，避免 HMD/Hand 数据每次更新都触发整棵 Compose 树重组。
+3. **完成第二个优化点：收缩 SpatialView.update 的职责范围**：
+   - 仍在 [HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt) 中调整。
+   - 将手柄输入处理从 `SpatialView.update` 移到 `ControllerActionListener` 中直接消费。
+   - 将拍手检测从 `SpatialView.update` 移到 `HandTrackingProvider.dataFlow` 收集协程中处理。
+   - `SpatialView.update` 现在仅保留附件挂载、输入面板位置同步、HMD 位置写入、对话气泡位置同步等必要的场景变换逻辑。
+4. **补齐低频 UI 状态可观察性，防止功能回归**：
+   - 修改文件：[VoiceInputProvider.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/input/VoiceInputProvider.kt)
+   - 将语音输入的 `isActive` 改为 Compose 可观察的低频状态，确保在移除高频 tracking 重组后，录音态 UI 仍能正常刷新显示。
+
+### 二、编译与测试情况
+- 执行 `./gradlew :app:compileDebugKotlin`，构建成功。
+- 编译过程中 Kotlin daemon 连接失败后自动回退到非 daemon 编译，但不影响本次代码正确性验证。
+- VS Code/IDE 诊断对个别 Kotlin 文件出现了全量未解析的假阳性，但与 Gradle 编译结果不一致，当前以真实编译结果为准。
+
+### 三、技术债务与踩坑记录
+- **高频数据与低频 UI 不能混用同一条 Compose 状态通路**：原先 `HMD/Hand` 的高频状态被直接塞到顶层 `HomeStage()`，任何 tracking 更新都可能放大成整棵树重组。
+- **优化高频重组后，要主动补齐低频 UI 的可观察状态**：`VoiceInputProvider.isListening()` 原本只是普通字段，之前可能借助其他重组“碰巧刷新”；一旦拿掉高频重组，录音 UI 就必须有自己的低频状态源。
+- **`SpatialView.update` 更适合作为变换同步点，而不是通用业务分发器**：输入事件和手势识别如果能在事件流里消费，就不要继续压在每帧 update 中。
+
+### 四、后续开发建议
+- 下一步可以继续处理清单中的第 3、4 个点：`FairyBehaviorSystem` 每帧实体查询减负，以及首屏资源加载拆分。
+- 建议尽快在真机上补一轮 Perfetto / Profiler 采样，重点观察 `System_Update: FairyBehaviorSystem`、`frameDrop`、`LoadEntity_Asset`、`Spatial_App_Initialize`。
+
+---
+
+## Phase 5.4 工作汇报：SpatialView 更新触发机制误判导致的功能回归修复
+
+### 一、问题定位
+1. 上一轮性能优化中，错误地将 `SpatialView.update` 视为稳定的逐帧回调。
+2. 根据 PICO Spatial SDK 文档，`SpatialView.update` 在 `initial` 后自动调用一次，之后依赖 `SpatialView` 内部或父级 Compose state 变化触发，而不是独立 ECS 帧循环。
+3. 由于将 `HMDTrackingProvider.dataFlow` 从 `collectAsState()` 改成普通运行时缓存，导致：
+   - `HMD` 实体位置无法稳定更新到场景中
+   - `FairyBehaviorSystem` 读取到冻结的 HMD 坐标，精灵跟随失效
+   - 输入面板位置同步和朝向链路也因 `SpatialView.update` 触发不足而失效
+
+### 二、修复方案
+- 在 [HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt) 中恢复 `HMDTrackingProvider.dataFlow.collectAsState(...)`
+- 让 `SpatialView.update` 重新随 HMD 状态变化触发，从而恢复：
+  - `HMD` 实体位姿同步
+  - 精灵跟随逻辑依赖的 HMD 坐标更新
+  - 输入框位置跟随和 `LookAtComponent` 相关行为
+- 保留上轮较安全的两项优化：
+  - 控制器输入改为在 `ControllerActionListener` 中直接消费
+  - 拍手检测改为在 `HandTrackingProvider.dataFlow` 收集协程中处理
+
+### 三、编译与验证
+- 执行 `./gradlew :app:compileDebugKotlin`，编译通过。
+- 本次修复属于最小回滚策略，只恢复错误切断的 `HMD -> Compose -> SpatialView.update` 驱动链，不继续扩大重构范围。
+
+### 四、经验总结
+- 在当前工程架构下，`HMD` 高频 tracking 不是一个可以直接从 Compose 中抽离的“纯性能热点”，因为它同时承担了 `SpatialView.update` 的场景同步驱动职责。
+- 后续若要继续优化这一点，必须先把 `HMD` 实体同步、输入框跟随和附件挂载修复迁移到真正独立的帧级更新机制中，再移除 Compose 高频驱动。

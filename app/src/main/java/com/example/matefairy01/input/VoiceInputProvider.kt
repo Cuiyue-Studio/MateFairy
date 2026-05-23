@@ -7,6 +7,9 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 
 /**
  * 语音输入提供者（预留实现）
@@ -15,7 +18,7 @@ import android.util.Log
 class VoiceInputProvider(private val context: Context) : IUserInputProvider {
 
     private var speechRecognizer: SpeechRecognizer? = null
-    private var isActive = false
+    private var isActive by mutableStateOf(false)
     private var resultCallback: ((String) -> Unit)? = null
 
     override val inputMode: InputMode = InputMode.VOICE

@@ -5,9 +5,10 @@ import android.os.Looper
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -29,38 +30,30 @@ import com.example.matefairy01.di.AppModule
 import com.example.matefairy01.emotion.IEmotionRenderer
 import com.example.matefairy01.input.HandClapDetector
 import com.example.matefairy01.input.InputControllerManager
-import com.example.matefairy01.ui.SharedUIManager
 import com.example.matefairy01.ui.FairyDialogueUI
+import com.example.matefairy01.ui.SharedUIManager
 import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.ecs.LookAtComponent
-import com.pico.spatial.core.ecs.TransformComponent
-import com.pico.spatial.core.ecs.ModelComponent
-import com.pico.spatial.core.ecs.resource.MeshResource
 import com.pico.spatial.core.ecs.resource.AssetBundle
+import com.pico.spatial.core.ecs.TransformComponent
 import com.pico.spatial.core.math.Quat
 import com.pico.spatial.core.math.Vector3
-import com.pico.spatial.tracking.controller.ControllerActionData
 import com.pico.spatial.tracking.controller.ControllerTrackingProvider
-import com.pico.spatial.tracking.hand.HandTrackingData
 import com.pico.spatial.tracking.hand.HandTrackingProvider
 import com.pico.spatial.tracking.hmd.HMDPose
 import com.pico.spatial.tracking.hmd.HMDTrackingData
 import com.pico.spatial.tracking.hmd.HMDTrackingProvider
-import com.pico.spatial.ui.platform.containers.LocalSpatialNavigator
 import com.pico.spatial.ui.foundation.content.SpatialView
 import com.pico.spatial.ui.foundation.dsl.registerSystem
 import com.pico.spatial.ui.foundation.dsl.unregisterSystem
+import com.pico.spatial.ui.platform.meters
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-
-import com.pico.spatial.ui.platform.meters
-import androidx.compose.foundation.layout.size
-
-import androidx.compose.foundation.layout.requiredSize
 import com.example.matefairy01.ui.GameUIContainer
 
 data class DialogueBubbleState(
@@ -68,37 +61,35 @@ data class DialogueBubbleState(
     val isVisible: Boolean
 )
 
+private class HomeStageRuntimeState {
+    var loadedRobotModelEntity: Entity? = null
+    var dialogueAttachmentEntity: Entity? = null
+    var userInputAttachmentEntity: Entity? = null
+}
+
 const val DEFAULT_TEST_DIALOGUE_TEXT = "你好！我是你的MateFairy。"
 
 @Composable
 fun HomeStage() {
     val scope = rememberCoroutineScope()
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
+    val runtimeState = remember { HomeStageRuntimeState() }
 
     // 追踪数据提供者
     val hmdTrackingProvider = remember { HMDTrackingProvider() }
     val hmdTrackingData by hmdTrackingProvider.dataFlow.collectAsState(
         initial = HMDTrackingData(HMDPose(Vector3.ZERO, Quat.identity()), 0L)
     )
-
     val controllerTrackingProvider = remember { ControllerTrackingProvider() }
 
     // 手部追踪提供者（手眼模式）
     val handTrackingProvider = remember { HandTrackingProvider() }
-    val handTrackingData by handTrackingProvider.dataFlow.collectAsState(
-        initial = HandTrackingData(null, null, 0L)
-    )
 
     // 输入提供者
     val context = LocalContext.current
     val appConfig = remember(context) { AppConfigLoader.load(context) }
     val textInputProvider = SharedUIManager.textInputProvider
     val voiceInputProvider = SharedUIManager.voiceInputProvider
-
-    val navigator = LocalSpatialNavigator.current
-
-    var loadedRobotModelEntity by remember { mutableStateOf<Entity?>(null) }
-    var dialogueAttachmentEntity by remember { mutableStateOf<Entity?>(null) }
     
     // AI 对话状态
     var dialogueText by remember { mutableStateOf("") }
@@ -114,9 +105,6 @@ fun HomeStage() {
 
     // 监听全局状态，动态打开或关闭 UI 容器
     // 已经移除了对 navigator.openWindowContainer 的调用，回归原生 3D Compose UI 方案
-    
-    // 记录用户输入面板的 Entity 引用
-    var userInputAttachmentEntity by remember { mutableStateOf<Entity?>(null) }
 
     // 初始化 AI 模块
     DisposableEffect(appConfig) {
@@ -142,7 +130,7 @@ fun HomeStage() {
                 handleUserInput(
                     text,
                     scope,
-                    fairyEntityProvider = { loadedRobotModelEntity },
+                    fairyEntityProvider = { runtimeState.loadedRobotModelEntity },
                     onDialogueUpdate = {
                         dialogueText = it
                         dialogueBubbleState = dialogueBubbleState.copy(
@@ -157,7 +145,7 @@ fun HomeStage() {
                 handleUserInput(
                     text,
                     scope,
-                    fairyEntityProvider = { loadedRobotModelEntity },
+                    fairyEntityProvider = { runtimeState.loadedRobotModelEntity },
                     onDialogueUpdate = {
                         dialogueText = it
                         dialogueBubbleState = dialogueBubbleState.copy(
@@ -179,7 +167,7 @@ fun HomeStage() {
                 handleUserInput(
                     result, 
                     scope, 
-                    fairyEntityProvider = { loadedRobotModelEntity },
+                    fairyEntityProvider = { runtimeState.loadedRobotModelEntity },
                     onDialogueUpdate = { 
                         dialogueText = it
                         dialogueBubbleState = dialogueBubbleState.copy(
@@ -193,25 +181,35 @@ fun HomeStage() {
         }
     }
 
-    // 控制器动作监听
-    var latestControllerAction by remember { mutableStateOf<ControllerActionData?>(null) }
-
     val controllerListener = remember {
         ControllerTrackingProvider.ControllerActionListener { action ->
             mainHandler.post {
-                latestControllerAction = action
+                inputControllerManager.processControllerAction(action)
             }
         }
     }
 
-    DisposableEffect(hmdTrackingProvider, controllerTrackingProvider, handTrackingProvider) {
+    DisposableEffect(
+        hmdTrackingProvider,
+        controllerTrackingProvider,
+        handTrackingProvider,
+        inputControllerManager,
+        handClapDetector
+    ) {
         hmdTrackingProvider.start()
         controllerTrackingProvider.addControllerActionListener(controllerListener)
         controllerTrackingProvider.start()
         handTrackingProvider.start()
         registerSystem<FairyBehaviorSystem>()
 
+        val handTrackingJob = scope.launch {
+            handTrackingProvider.dataFlow.collect { trackingData ->
+                handClapDetector.processHandTrackingData(trackingData)
+            }
+        }
+
         onDispose {
+            handTrackingJob.cancel()
             unregisterSystem<FairyBehaviorSystem>()
             hmdTrackingProvider.stop()
             controllerTrackingProvider.removeControllerActionListener(controllerListener)
@@ -232,7 +230,7 @@ fun HomeStage() {
                             handleUserInput(
                                 text = prompt,
                                 scope = this,
-                                fairyEntityProvider = { loadedRobotModelEntity },
+                                fairyEntityProvider = { runtimeState.loadedRobotModelEntity },
                                 onDialogueUpdate = {
                                     dialogueText = it
                                     dialogueBubbleState = dialogueBubbleState.copy(
@@ -263,9 +261,9 @@ fun HomeStage() {
         update = { content, attachments ->
             // 必须在 update 中保证所有的 Attachments 被添加到场景中
             // 因为 Compose 附件的生命周期独立于 3D 渲染，只有挂载后 SDK 才能进行深度计算和渲染
-            if (dialogueAttachmentEntity == null) {
+            if (runtimeState.dialogueAttachmentEntity == null) {
                 attachments.entity("text")?.let {
-                    dialogueAttachmentEntity = it
+                    runtimeState.dialogueAttachmentEntity = it
                     if (it.components[TransformComponent::class.java] == null) {
                         it.components[TransformComponent::class.java] = TransformComponent()
                     }
@@ -279,8 +277,8 @@ fun HomeStage() {
             }
 
             attachments.entity("user_input_panel")?.let { inputEntity ->
-                if (userInputAttachmentEntity != inputEntity) {
-                    userInputAttachmentEntity = inputEntity
+                if (runtimeState.userInputAttachmentEntity != inputEntity) {
+                    runtimeState.userInputAttachmentEntity = inputEntity
                     if (inputEntity.components[TransformComponent::class.java] == null) {
                         inputEntity.components[TransformComponent::class.java] = TransformComponent()
                     }
@@ -329,8 +327,9 @@ fun HomeStage() {
                 }
             }
 
-            val robotTransform = loadedRobotModelEntity?.components?.get(TransformComponent::class.java)
-            val textAttachmentTransform = dialogueAttachmentEntity?.components?.get(TransformComponent::class.java)
+            val robotTransform = runtimeState.loadedRobotModelEntity?.components?.get(TransformComponent::class.java)
+            val textAttachmentTransform =
+                runtimeState.dialogueAttachmentEntity?.components?.get(TransformComponent::class.java)
             
             if (robotTransform != null) {
                 val robotPosition = robotTransform.position
@@ -344,14 +343,6 @@ fun HomeStage() {
                     )
                 )
             }
-
-            // 处理控制器输入（手柄模式）
-            latestControllerAction?.let { action ->
-                inputControllerManager.processControllerAction(action)
-            }
-
-            // 处理手部追踪输入（手眼模式）
-            handClapDetector.processHandTrackingData(handTrackingData)
         },
         initial = { content, attachments ->
             // 由于不能直接在 initial 闭包中构造包含 attachments 的 Entity
@@ -395,7 +386,7 @@ fun HomeStage() {
 
                 // 创建一个包装实体，用于控制整体位移和附加行为组件
                 val robotModel = Entity()
-                loadedRobotModelEntity = robotModel
+                runtimeState.loadedRobotModelEntity = robotModel
 
                 // 将已缩放的 GLB 挂载到 Wrapper
                 robotModel.addChild(glbRoot)
