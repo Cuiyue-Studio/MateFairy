@@ -18,12 +18,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pico.spatial.ui.design.Button
 import com.pico.spatial.ui.design.Text
 import com.pico.spatial.ui.design.TextField
+import com.pico.spatial.ui.foundation.material.backgroundMaterial
+import com.pico.spatial.ui.platform.Material
 
 /**
  * 精灵对话 UI 组件
@@ -43,10 +46,13 @@ object FairyDialogueUI {
     ) {
         Box(
             modifier = Modifier
-                .width(400.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(Color(0xCC1A1A2E))
-                .padding(24.dp)
+                .width(600.dp)
+                .clip(RoundedCornerShape(32.dp))
+                .backgroundMaterial(
+                    enable = true,
+                    style = Material.Regular
+                )
+                .padding(32.dp)
         ) {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -99,17 +105,22 @@ object FairyDialogueUI {
 
         Box(
             modifier = modifier
-                .width(300.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xE61A1A2E))
-                .padding(16.dp)
+                .width(520.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .backgroundMaterial(
+                    enable = true,
+                    style = Material.Regular
+                )
+                .padding(horizontal = 28.dp, vertical = 22.dp),
+            contentAlignment = Alignment.Center
         ) {
             Text(
                 text = text,
-                fontSize = 14.sp,
-                color = Color.White,
-                textAlign = TextAlign.Start,
-                lineHeight = 20.sp,
+                fontSize = 26.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFF4E342E),
+                textAlign = TextAlign.Center,
+                lineHeight = 34.sp,
                 modifier = Modifier.fillMaxWidth()
             )
         }

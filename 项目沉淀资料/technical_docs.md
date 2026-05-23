@@ -1,7 +1,7 @@
 # MateFairy01 技术文档总览
 
 > 本文档汇总了项目各阶段的技术交接与架构设计文档，用于帮助后续开发人员或 Agent 快速理解项目技术细节与接口约定。
-> 最后更新：2026-05-04
+> 最后更新：2026-05-24
 
 ---
 
@@ -354,3 +354,109 @@ val targetYaw = atan2(velocity.x, velocity.z).toDegrees() + 180f
   ```
 - **设计反思**：
   这个陷阱极具迷惑性，因为对于静态模型或无动画模型，父级缩放通常不会引发如此明显的剔除问题（因为它们的 Bounds 计算方式不同）。但对于 `SkinnedMesh`，其 Bounds 是动态且与实体自身 Transform 强绑定的，父级缩放在这里会成为一个“视觉欺骗”，导致不可预期的渲染剔除错误。
+
+## Phase 5 技术交接文档：大模型链路与空间 UI 交互设计
+
+### 1. 阶段概述
+本阶段核心完成了**真实大模型（DeepSeek）的 API 接入**，并彻底重构了对话气泡的空间挂载逻辑和 UI 表现。确立了“大模型输出 JSON 意图 -> 本地解析分发动作 -> 空间 UI 独立朝向”的整体架构。
+
+### 2. 核心架构与类说明
+
+#### 2.1 大模型直连通信 (`DeepSeekLLMProvider.kt`)
+- **JSON 方案**：为了保证架构的极简性和兼容性，舍弃了 `kotlinx.serialization`，采用 Android 原生的 `org.json.JSONObject` 和 `JSONArray` 进行请求体构建与响应解析。
+- **结构化 Prompt**：在构建消息时，会自动向 System Prompt 追加 JSON 格式约束，确保模型输出固定的 `{"reply_text": "...", "emotion": "...", "action_intent": "..."}` 格式。
+- **容错处理**：若大模型未按规范输出或解析失败，代码会自动提取文本主体作为 `reply_text`，并将意图降级为 `neutral` 和 `none`，保证对话流程不中断。
+
+#### 2.2 集中式配置 (`AppConfig.kt` & `AppConfigLoader.kt`)
+- 采用了严格的单文件配置策略，所有 AI 相关的业务配置（包含模型类型、API Key、超时时间、定时测试策略）都映射在 `AppConfig` 数据类中。
+- 运行时从 `assets/app_config.json` 中反序列化配置，方便在真机调试时动态替换参数而无需重新编译代码。
+
+#### 2.3 空间 UI 与跟随分离 (`HomeStage.kt`)
+- **独立实体策略**：UI 气泡 (`dialogueAttachmentEntity`) 不再作为机器人模型 (`loadedRobotModelEntity`) 的子节点，而是作为同级的平级实体被添加到 Scene 的 Content 中。
+- **空间位置同步**：在 `SpatialView` 的 `update` 回调中，每帧读取机器人的世界坐标，并将气泡实体的坐标设置为 `(robot.x, robot.y + 0.66f, robot.z)`，实现“仅跟随位置，不跟随旋转”的效果。
+- **LookAt 凝视组件**：给气泡实体挂载 `LookAtComponent` 并调用 `setViewerAsTarget()`，使其 Z 轴始终指向 HMD。配合毛玻璃材质（`backgroundMaterial(Material.Regular)`），实现了具有空间纵深感的高级 UI 体验。
+
+### 3. SDK/框架避坑指南
+
+- **LookAtComponent 与 UI 附件的方向冲突**：
+  PICO Spatial SDK 中，Compose 生成的 2D UI 附件（Attachment）挂载到 3D 实体时，默认是基于实体的局部坐标系。如果实体随模型旋转，UI 会难以阅读。
+  **最佳实践**：针对需要被玩家阅读的文本气泡，务必将其与运动模型在层级上剥离。使用单独的实体承载 UI，自己手动同步位置，并借助 `LookAtComponent` 控制朝向。这能完美解决“精灵转身背对玩家时，气泡文字反转不可读”的问题。
+
+## Phase 5.1 技术交接文档：空间 UI 渲染层级与深度测试控制
+
+### 1. 阶段概述
+在 Phase 5.1 中，重点排查了 2D Compose UI 在 3D 空间中容易被大型模型遮挡的问题。通过对 SDK 源码的深入反编译和排查，确认了 `DrawOrderGroupComponent` 对 `AttachmentPanelComponent` 无效，且当前 SDK 缺乏控制其深度写入的公开 API。
+
+### 2. 核心架构与类说明
+
+#### 2.1 ViewLink 机制与深度遮挡限制
+- **发现**: `AttachmentPanelComponent` 底层依赖 `ViewLink` 桥接 Android 原生视图，它不属于标准的 `ModelComponent` 或 `ParticleComponent`，因此无法通过 `DrawOrderGroupComponent` 进行排序，也无法直接在 `SpatialView` 层面通过修改 Material 禁用深度写入/测试（Depth Test）。
+
+### 3. SDK/框架避坑指南
+
+1. **空间 UI 防遮挡痛点记录**：
+   在 PICO Spatial SDK 中，**对于基于 ViewLink 的 Compose UI 附件，目前不存在类似于 OpenGL `glDisable(GL_DEPTH_TEST)` 的公开 API。** 
+   
+   目前的最佳实践是根据交互场景做区分处理：
+   - **交互面板（如输入框）**：可以动态修改其相对于玩家视角的空间物理坐标（如强行向头显拉近至 `0.65m`）来规避模型遮挡，因为这符合玩家进行输入交互的直觉。
+   - **跟随气泡**：不建议为了规避遮挡而向玩家偏移位置，这会改变 UI 尺寸感知并容易引起用户的视觉辐辏冲突。目前此问题作为 Feature Request 挂起，等待官方 SDK 支持 Compose UI 的深度图层控制。
+2. **实体组件遗漏陷阱**：
+   使用 `attachments.entity(id)` 获取到的 Compose 面板映射实体，部分情况下可能不自带 `TransformComponent`。如果不手动判断并补全该组件，后续所有的 `setPosition` 操作将静默失效，导致 UI 无法显示。
+   ```kotlin
+   if (components[TransformComponent::class.java] == null) {
+       components[TransformComponent::class.java] = TransformComponent()
+   }
+   ```
+3. **四元数旋转 API 差异**：
+   在 PICO Spatial SDK 中，若需使用四元数旋转一个三维向量，正确的方法签名是 `Quat.rotateVector(Vector3)`，而不是 `rotate()`。使用错误的名称将导致编译时 `Unresolved reference`。
+
+
+## Phase 5.2 技术交接文档：LLM 容错机制与 HUD 级空间跟随方案
+
+### 1. 阶段概述
+在 Phase 5.2 中，主要解决了两个核心痛点：一是 DeepSeek 大模型输出格式不稳定导致的对话链路断裂（触发兜底台词）；二是放弃了不适合高频移动的 `WindowContainer`，重构了 3D 空间中的输入面板，使其具备类似 HUD 的“锁定跟随”与“始终朝向”能力。
+
+### 2. 核心架构与类说明
+
+#### 2.1 LLM 响应解析的智能容错 (`DeepSeekLLMProvider.kt`)
+- **System Prompt 约束**：使用极度严厉的指令定义模型角色（“你是一个严格的接口服务器”），并明确指出“绝对不要输出 Markdown 标记和前置寒暄”。
+- **双层兜底策略**：
+  - 第一层：正常解析 JSON。
+  - 第二层：尝试从混杂的文本中正则匹配 `{...}` 块。
+  - 第三层：放弃 JSON 解析，将大模型返回的所有字符串直接作为纯文本，组装成默认状态（`neutral`, `none`）下发展示。这大幅提升了业务的鲁棒性。
+
+#### 2.2 HUD 级锁定跟随计算 (`HomeStage.kt`)
+- **废除 `GameUIContainer` 系统窗口**：移除了 `Main.kt` 中冗余的系统级窗口。
+- **欧拉角前向向量计算**：在 PICO Spatial SDK 中，通过四元数乘法计算前向向量常因 API 版本差异导致编译失败（如 `rotate` 或 `rotateVector` 不存在）。本项目沉淀了最稳定的原生计算方案：
+  ```kotlin
+  val hmdPose = hmdTrackingData.hmdPose
+  val euler = hmdPose.rotation.toEulerAngles() // 返回度数
+  val yawRad = Math.toRadians(euler.yaw.toDouble())
+  val pitchRad = Math.toRadians(euler.pitch.toDouble())
+  
+  // 计算前向向量 (PICO 中前向为 -Z，Y朝上)
+  val forwardX = -kotlin.math.sin(yawRad) * kotlin.math.cos(pitchRad)
+  val forwardY = kotlin.math.sin(pitchRad)
+  val forwardZ = -kotlin.math.cos(yawRad) * kotlin.math.cos(pitchRad)
+  
+  // 结合头部坐标和偏移距离计算最终目标位置
+  val targetPos = Vector3(
+      hmdPose.position.x + (forwardX * 0.65f).toFloat(),
+      hmdPose.position.y + (forwardY * 0.65f).toFloat() - 0.15f,
+      hmdPose.position.z + (forwardZ * 0.65f).toFloat()
+  )
+  inputEntity.components[TransformComponent::class.java]?.setPosition(targetPos)
+  ```
+
+#### 2.3 交互状态提升与生命周期 (`TextInputProvider.kt` & `SharedUIManager.kt`)
+- 保留了全局单例 `SharedUIManager` 用于管理输入状态，这避免了在 `InputControllerManager`（硬件输入监听）和 `HomeStage`（渲染主循环）之间来回传递复杂的回调。
+- 新增 `lastActiveTime`，在 UI 侧通过 `LaunchedEffect` 每秒轮询超时时间，超过 10 秒即触发关闭事件，实现了与渲染解耦的倒计时机制。
+
+### 3. SDK/框架避坑指南
+
+1. **`WindowContainer` 的局限性**：
+   `WindowContainer` 适用于静态的、或者由用户主动用手柄拖拽布置的大型 2D 业务面板。**它不支持在代码中通过逐帧调用位置刷新来实现 6DoF 锁定跟随**。如果需要做一个随叫随到、贴脸跟随的悬浮 UI，必须使用原生 3D `AttachmentPanel` + 每帧手动修改 `TransformComponent`。
+2. **多余的 Attachment 实体**：
+   在 3D 场景中，只要 `attachments { ... }` 闭包里声明了组件，无论是否当前处于显示状态，如果获取不到该实体并对其进行妥善的隐藏或移除操作，它都会残留在场景中。必须确保不需要渲染时，关闭相关的 boolean 开关，或者确保实体池中只有一个唯一映射。
+3. **PICO 欧拉角单位**：
+   `Quat.toEulerAngles()` 返回的 `yaw`, `pitch`, `roll` 属性，其实际单位通常是**度（Degrees）**。在代入 `kotlin.math.sin()` 或 `cos()` 进行数学计算前，必须先使用 `Math.toRadians()` 转换为弧度，否则会导致计算出的跟随位置发生极速且混乱的抖动。

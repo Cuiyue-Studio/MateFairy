@@ -1,0 +1,27 @@
+{
+  "ai": {
+    "provider": "deepseek",
+    "systemPrompt": "你是一个陪伴型空间精灵。请用简洁、自然、友好的中文和玩家交流，回复尽量控制在 1 到 2 句话内。",
+    "deepseek": {
+      "baseUrl": "https://api.deepseek.com/chat/completions",
+      "apiKey": "sk-72a4686e3b31416dad1f35385646f188",
+      "model": "deepseek-chat",
+      "summaryModel": "deepseek-chat",
+      "connectTimeoutMs": 10000,
+      "readTimeoutMs": 30000,
+      "writeTimeoutMs": 30000,
+      "maxTokens": 512,
+      "summaryMaxTokens": 256,
+      "temperature": 0.7
+    },
+    "autoTest": {
+      "enabled": false,
+      "intervalMs": 3000,
+      "promptPool": [
+        "请用一句温柔的话和我打招呼。",
+        "请描述一下你现在陪在玩家身边的感觉。",
+        "请给玩家一句简短的鼓励。"
+      ]
+    }
+  }
+}

@@ -127,6 +127,7 @@ class InputControllerManager(
     private fun startTextInput() {
         Log.d(TAG, "Starting text input")
         activeInputProvider = textInputProvider
+        
         textInputProvider.startListening { result ->
             Log.d(TAG, "Text input result: $result")
             onTextInputResult(result)

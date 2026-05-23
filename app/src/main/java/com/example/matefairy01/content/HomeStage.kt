@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -19,7 +20,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.matefairy01.ai.ChatMessage
-import com.example.matefairy01.ai.MockLLMProvider
+import com.example.matefairy01.ai.LLMProviderFactory
+import com.example.matefairy01.config.AppConfigLoader
 import com.example.matefairy01.behavior.FairyBehaviorComponent
 import com.example.matefairy01.behavior.FairyBehaviorSystem
 import com.example.matefairy01.behavior.HMDTagComponent
@@ -27,10 +29,10 @@ import com.example.matefairy01.di.AppModule
 import com.example.matefairy01.emotion.IEmotionRenderer
 import com.example.matefairy01.input.HandClapDetector
 import com.example.matefairy01.input.InputControllerManager
-import com.example.matefairy01.input.TextInputProvider
-import com.example.matefairy01.input.VoiceInputProvider
+import com.example.matefairy01.ui.SharedUIManager
 import com.example.matefairy01.ui.FairyDialogueUI
 import com.pico.spatial.core.ecs.Entity
+import com.pico.spatial.core.ecs.LookAtComponent
 import com.pico.spatial.core.ecs.TransformComponent
 import com.pico.spatial.core.ecs.ModelComponent
 import com.pico.spatial.core.ecs.resource.MeshResource
@@ -44,10 +46,14 @@ import com.pico.spatial.tracking.hand.HandTrackingProvider
 import com.pico.spatial.tracking.hmd.HMDPose
 import com.pico.spatial.tracking.hmd.HMDTrackingData
 import com.pico.spatial.tracking.hmd.HMDTrackingProvider
+import com.pico.spatial.ui.platform.containers.LocalSpatialNavigator
 import com.pico.spatial.ui.foundation.content.SpatialView
 import com.pico.spatial.ui.foundation.dsl.registerSystem
 import com.pico.spatial.ui.foundation.dsl.unregisterSystem
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -55,6 +61,14 @@ import com.pico.spatial.ui.platform.meters
 import androidx.compose.foundation.layout.size
 
 import androidx.compose.foundation.layout.requiredSize
+import com.example.matefairy01.ui.GameUIContainer
+
+data class DialogueBubbleState(
+    val text: String,
+    val isVisible: Boolean
+)
+
+const val DEFAULT_TEST_DIALOGUE_TEXT = "你好！我是你的MateFairy。"
 
 @Composable
 fun HomeStage() {
@@ -77,23 +91,43 @@ fun HomeStage() {
 
     // 输入提供者
     val context = LocalContext.current
-    val textInputProvider = remember { TextInputProvider() }
-    val voiceInputProvider = remember { VoiceInputProvider(context) }
+    val appConfig = remember(context) { AppConfigLoader.load(context) }
+    val textInputProvider = SharedUIManager.textInputProvider
+    val voiceInputProvider = SharedUIManager.voiceInputProvider
 
+    val navigator = LocalSpatialNavigator.current
+
+    var loadedRobotModelEntity by remember { mutableStateOf<Entity?>(null) }
+    var dialogueAttachmentEntity by remember { mutableStateOf<Entity?>(null) }
+    
     // AI 对话状态
     var dialogueText by remember { mutableStateOf("") }
     var isProcessing by remember { mutableStateOf(false) }
+    var dialogueBubbleState by remember {
+        mutableStateOf(
+            DialogueBubbleState(
+                text = DEFAULT_TEST_DIALOGUE_TEXT,
+                isVisible = false
+            )
+        )
+    }
+
+    // 监听全局状态，动态打开或关闭 UI 容器
+    // 已经移除了对 navigator.openWindowContainer 的调用，回归原生 3D Compose UI 方案
+    
+    // 记录用户输入面板的 Entity 引用
+    var userInputAttachmentEntity by remember { mutableStateOf<Entity?>(null) }
 
     // 初始化 AI 模块
-    DisposableEffect(Unit) {
-        val mockProvider = MockLLMProvider()
+    DisposableEffect(appConfig) {
+        val provider = LLMProviderFactory.create(appConfig.ai)
         val emotionRenderer = object : IEmotionRenderer {
             override fun renderEmotion(emotion: String, fairyEntity: Entity) {
                 // 简单的情绪渲染：这里可以扩展为播放动画或改变材质
             }
         }
         AppModule.initialize(
-            provider = mockProvider,
+            provider = provider,
             renderer = emotionRenderer
         )
         onDispose { }
@@ -105,10 +139,34 @@ fun HomeStage() {
             textInputProvider = textInputProvider,
             voiceInputProvider = voiceInputProvider,
             onTextInputResult = { text ->
-                handleUserInput(text, scope, onDialogueUpdate = { dialogueText = it }, onProcessing = { isProcessing = it })
+                handleUserInput(
+                    text,
+                    scope,
+                    fairyEntityProvider = { loadedRobotModelEntity },
+                    onDialogueUpdate = {
+                        dialogueText = it
+                        dialogueBubbleState = dialogueBubbleState.copy(
+                            text = it,
+                            isVisible = true
+                        )
+                    },
+                    onProcessing = { isProcessing = it }
+                )
             },
             onVoiceInputResult = { text ->
-                handleUserInput(text, scope, onDialogueUpdate = { dialogueText = it }, onProcessing = { isProcessing = it })
+                handleUserInput(
+                    text,
+                    scope,
+                    fairyEntityProvider = { loadedRobotModelEntity },
+                    onDialogueUpdate = {
+                        dialogueText = it
+                        dialogueBubbleState = dialogueBubbleState.copy(
+                            text = it,
+                            isVisible = true
+                        )
+                    },
+                    onProcessing = { isProcessing = it }
+                )
             }
         )
     }
@@ -118,7 +176,19 @@ fun HomeStage() {
         HandClapDetector {
             // 检测到3次拍手，开始语音输入
             voiceInputProvider.startListening { result ->
-                handleUserInput(result, scope, onDialogueUpdate = { dialogueText = it }, onProcessing = { isProcessing = it })
+                handleUserInput(
+                    result, 
+                    scope, 
+                    fairyEntityProvider = { loadedRobotModelEntity },
+                    onDialogueUpdate = { 
+                        dialogueText = it
+                        dialogueBubbleState = dialogueBubbleState.copy(
+                            text = it,
+                            isVisible = true
+                        )
+                    }, 
+                    onProcessing = { isProcessing = it }
+                )
             }
         }
     }
@@ -152,12 +222,103 @@ fun HomeStage() {
         }
     }
 
+    DisposableEffect(appConfig.ai.autoTest) {
+        val job: Job? =
+            if (appConfig.ai.autoTest.enabled) {
+                scope.launch {
+                    while (isActive) {
+                        val prompt = appConfig.ai.autoTest.promptPool.randomOrNull()
+                        if (!prompt.isNullOrBlank()) {
+                            handleUserInput(
+                                text = prompt,
+                                scope = this,
+                                fairyEntityProvider = { loadedRobotModelEntity },
+                                onDialogueUpdate = {
+                                    dialogueText = it
+                                    dialogueBubbleState = dialogueBubbleState.copy(
+                                        text = it,
+                                        isVisible = true
+                                    )
+                                },
+                                onProcessing = { isProcessing = it }
+                            )
+                        }
+                        delay(appConfig.ai.autoTest.intervalMs.coerceAtLeast(1000L))
+                    }
+                }
+            } else {
+                null
+            }
+
+        onDispose {
+            job?.cancel()
+        }
+    }
+
     val rootEntity = remember { Entity() }
     val hmdEntity = remember { Entity().apply { components.set(HMDTagComponent()) } }
 
     SpatialView(
         modifier = Modifier.requiredSize(10.meters),
-        update = { _, _ ->
+        update = { content, attachments ->
+            // 必须在 update 中保证所有的 Attachments 被添加到场景中
+            // 因为 Compose 附件的生命周期独立于 3D 渲染，只有挂载后 SDK 才能进行深度计算和渲染
+            if (dialogueAttachmentEntity == null) {
+                attachments.entity("text")?.let {
+                    dialogueAttachmentEntity = it
+                    if (it.components[TransformComponent::class.java] == null) {
+                        it.components[TransformComponent::class.java] = TransformComponent()
+                    }
+                    it.components[LookAtComponent::class.java] = LookAtComponent().apply {
+                        setViewerAsTarget()
+                        alignLocalUpToWorldUp = true
+                    }
+                    // !关键修复点! 将这个挂载了 Compose UI 的 Entity 正式加入 3D 渲染树
+                    content.addEntity(it)
+                }
+            }
+
+            attachments.entity("user_input_panel")?.let { inputEntity ->
+                if (userInputAttachmentEntity != inputEntity) {
+                    userInputAttachmentEntity = inputEntity
+                    if (inputEntity.components[TransformComponent::class.java] == null) {
+                        inputEntity.components[TransformComponent::class.java] = TransformComponent()
+                    }
+                    if (inputEntity.components[LookAtComponent::class.java] == null) {
+                        inputEntity.components[LookAtComponent::class.java] = LookAtComponent().apply {
+                            setViewerAsTarget()
+                            alignLocalUpToWorldUp = true
+                        }
+                    }
+                    content.addEntity(inputEntity)
+                }
+
+                // 计算头部前方 0.65m 的位置，并略微降低高度
+                val hmdPose = hmdTrackingData.hmdPose
+                
+                // 计算头部前方 0.65m 的位置，并略微降低高度
+                // PICO SDK 的 Quat.toEulerAngles() 返回的是 EulerAngles 对象
+                val euler = hmdPose.rotation.toEulerAngles()
+                
+                // 这里的 euler 是以度为单位（通常是这样），需要转换为弧度
+                val yawRad = Math.toRadians(euler.yaw.toDouble())
+                val pitchRad = Math.toRadians(euler.pitch.toDouble())
+                
+                // 简单的欧拉角转方向向量（Y-up, Z 轴负方向为前向）
+                val forwardX = -kotlin.math.sin(yawRad) * kotlin.math.cos(pitchRad)
+                val forwardY = kotlin.math.sin(pitchRad)
+                val forwardZ = -kotlin.math.cos(yawRad) * kotlin.math.cos(pitchRad)
+                
+                val distance = 0.65f
+                val targetPos = Vector3(
+                    hmdPose.position.x + (forwardX * distance).toFloat(),
+                    hmdPose.position.y + (forwardY * distance).toFloat() - 0.15f,
+                    hmdPose.position.z + (forwardZ * distance).toFloat()
+                )
+                
+                inputEntity.components[TransformComponent::class.java]?.setPosition(targetPos)
+            }
+
             // 更新 HMD 位置 - 直接使用追踪数据的世界坐标
             hmdTrackingData.hmdPose.let { pose ->
                 val transformComponent = hmdEntity.components[TransformComponent::class.java]
@@ -166,6 +327,22 @@ fun HomeStage() {
                     setPosition(pose.position)
                     setQuaternion(pose.rotation)
                 }
+            }
+
+            val robotTransform = loadedRobotModelEntity?.components?.get(TransformComponent::class.java)
+            val textAttachmentTransform = dialogueAttachmentEntity?.components?.get(TransformComponent::class.java)
+            
+            if (robotTransform != null) {
+                val robotPosition = robotTransform.position
+                
+                // 将对话气泡放在机器人头顶
+                textAttachmentTransform?.setPosition(
+                    Vector3(
+                        robotPosition.x,
+                        robotPosition.y + 0.66f,
+                        robotPosition.z
+                    )
+                )
             }
 
             // 处理控制器输入（手柄模式）
@@ -177,11 +354,14 @@ fun HomeStage() {
             handClapDetector.processHandTrackingData(handTrackingData)
         },
         initial = { content, attachments ->
+            // 由于不能直接在 initial 闭包中构造包含 attachments 的 Entity
+            // 且之前的直接获取机制会导致 null 的生命周期问题
+            // 所以我们这里只加载基础包，完全依赖 update 闭包来实时扫描和挂载 Attachments
+            
             val bundle =
                 withContext(kotlinx.coroutines.Dispatchers.IO) { AssetBundle.load("asset://editor-asset.bundle") }
             val model = Entity.loadSuspend(modelName = "MyScene", bundle = bundle)
 
-            var loadedRobotModel: Entity? = null
             model.apply {
                 components[TransformComponent::class.java]?.apply {
                     setPosition(Vector3(0f, 0f, 0f))
@@ -215,7 +395,7 @@ fun HomeStage() {
 
                 // 创建一个包装实体，用于控制整体位移和附加行为组件
                 val robotModel = Entity()
-                loadedRobotModel = robotModel
+                loadedRobotModelEntity = robotModel
 
                 // 将已缩放的 GLB 挂载到 Wrapper
                 robotModel.addChild(glbRoot)
@@ -261,17 +441,9 @@ fun HomeStage() {
             bundle.close()
 
             // 设置对话文本附件位置（精灵头顶）
-            val textAttachment = attachments.entity(id = "text")
-            textAttachment?.apply {
-                components[TransformComponent::class.java]?.apply {
-                    // Wrapper 的 scale 为 1.0，局部坐标等于世界坐标。
-                    // 精灵高度约 0.38 米，文本放在头顶上方 0.25 米处。
-                    setPosition(Vector3(0f, 0.63f, 0.0f))
-                }
-                // 附加到 loadedRobotModel 上，让文本气泡跟随机器人移动
-                loadedRobotModel?.addChild(this)
-            }
-
+            // 在 SDK 新版本中，不再需要在 initial 中预挂载 attachments，
+            // 全部由 update 中扫描补齐
+            
             content.addEntity(rootEntity)
 
             // HMD 实体直接添加到场景 content 中（不是任何实体的子节点）
@@ -279,39 +451,6 @@ fun HomeStage() {
             content.addEntity(hmdEntity)
         },
         attachments = {
-            // 文本输入面板
-            AttachmentPanel(id = "input_panel") {
-                if (textInputProvider.showInputDialog) {
-                    Box(
-                        modifier = Modifier
-                            .size(640.dp, 480.dp)
-                            .background(Color(0xCC000000)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        FairyDialogueUI.TextInputDialog(
-                            text = textInputProvider.currentText,
-                            onTextChange = { textInputProvider.updateText(it) },
-                            onSubmit = { textInputProvider.submitText() },
-                            onCancel = { textInputProvider.cancelInput() }
-                        )
-                    }
-                }
-            }
-
-            // 录音状态指示器面板
-            AttachmentPanel(id = "recording_indicator") {
-                if (voiceInputProvider.isListening()) {
-                    Box(
-                        modifier = Modifier
-                            .size(200.dp, 200.dp)
-                            .background(Color.Transparent),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        FairyDialogueUI.RecordingIndicator(isRecording = true)
-                    }
-                }
-            }
-
             // AI 回复对话气泡面板 (关联到 text 附件)
             AttachmentPanel(id = "text") {
                 if (dialogueText.isNotBlank() && !isProcessing) {
@@ -325,6 +464,14 @@ fun HomeStage() {
                     }
                 }
             }
+
+            // 用户输入面板 (回归原生 3D 附件方案)
+            val needUI = textInputProvider.showInputDialog || voiceInputProvider.isListening()
+            if (needUI) {
+                AttachmentPanel(id = "user_input_panel") {
+                    GameUIContainer()
+                }
+            }
         }
     )
 }
@@ -335,6 +482,7 @@ fun HomeStage() {
 private fun handleUserInput(
     text: String,
     scope: CoroutineScope,
+    fairyEntityProvider: () -> Entity?,
     onDialogueUpdate: (String) -> Unit,
     onProcessing: (Boolean) -> Unit
 ) {
@@ -359,8 +507,8 @@ private fun handleUserInput(
             onDialogueUpdate(response.reply_text)
 
             // 触发情绪和动作
-            AppModule.emotionEngine.triggerEmotion(response.emotion, Entity())
-            AppModule.actionRegistry.dispatchAction(response.action_intent, Entity())
+            AppModule.emotionEngine.triggerEmotion(response.emotion, fairyEntityProvider() ?: Entity())
+            AppModule.actionRegistry.dispatchAction(response.action_intent, fairyEntityProvider() ?: Entity())
 
         } catch (e: Exception) {
             onDialogueUpdate("抱歉，我遇到了一些问题，请稍后再试。")
