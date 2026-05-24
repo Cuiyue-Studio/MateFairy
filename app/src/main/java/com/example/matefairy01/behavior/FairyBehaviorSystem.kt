@@ -7,7 +7,6 @@ import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.ecs.TransformComponent
 import com.pico.spatial.core.math.Vector3
 import com.pico.spatial.core.math.EulerAngles
-import com.example.matefairy01.animation.FairyAnimation
 import kotlin.math.atan2
 import kotlin.math.sqrt
 import kotlin.math.sin
@@ -29,7 +28,7 @@ class FairyBehaviorSystem : System() {
         // SDK 提供了 getGlobalPosition() 或者在 Scene 中可以根据层级计算，但 HMD 通常就是世界坐标
         val hmdTransform = hmdEntity.components[TransformComponent::class.java] ?: return
         val hmdPos = hmdTransform.position
-        val animationController = BehaviorRuntimeDependencies.animationController
+        val avatarController = BehaviorRuntimeDependencies.avatarController
 
         val fairyEntities = resolveFairyEntities(context)
         if (fairyEntities.isEmpty()) return
@@ -113,7 +112,7 @@ class FairyBehaviorSystem : System() {
                         behavior.state = FairyState.RANDOM_MOVING
                         behavior.waitTimer = 0f
                         behavior.currentTarget = getRandomTargetInInnerRadius(hmdPos, behavior.innerRadius, behavior.hoverHeight, behavior.zDeviationRange)
-                        animationController?.playAnimation(FairyAnimation.TURBO_DASH)
+                        avatarController?.requestMovingAnimation()
                     }
                 }
                 
@@ -125,7 +124,7 @@ class FairyBehaviorSystem : System() {
                         behavior.state = FairyState.FOLLOWING
                         behavior.waitTimer = 0f
                         behavior.currentTarget = getRandomTargetInInnerRadius(hmdPos, behavior.innerRadius, behavior.hoverHeight, behavior.zDeviationRange)
-                        animationController?.playAnimation(FairyAnimation.TURBO_DASH)
+                        avatarController?.requestMovingAnimation()
                     } else {
                         // Normal random movement inside the inner/buffer zone
                         if (behavior.currentTarget == null || hasReachedTarget(fairyPos, behavior.currentTarget!!)) {
@@ -134,7 +133,7 @@ class FairyBehaviorSystem : System() {
                             behavior.state = FairyState.RANDOM_WAITING
                             
                             // 尝试播放静止时动画
-                            val idleAnim = animationController?.playRandomIdleAnimation()
+                            val idleAnim = avatarController?.requestIdleAnimation()
                             if (idleAnim != null) {
                                 behavior.isWaitingForAnimation = true
                                 behavior.waitTimer = idleAnim.durationMs / 1000f
@@ -164,7 +163,7 @@ class FairyBehaviorSystem : System() {
                         behavior.waitTimer = 0f
                         behavior.isWaitingForAnimation = false
                         behavior.currentTarget = getRandomTargetInInnerRadius(hmdPos, behavior.innerRadius, behavior.hoverHeight, behavior.zDeviationRange)
-                        animationController?.playAnimation(FairyAnimation.TURBO_DASH)
+                        avatarController?.requestMovingAnimation()
                     }
                     
                     // Check if player moved too far during random waiting
@@ -173,7 +172,7 @@ class FairyBehaviorSystem : System() {
                         behavior.waitTimer = 0f
                         behavior.isWaitingForAnimation = false
                         behavior.currentTarget = getRandomTargetInInnerRadius(hmdPos, behavior.innerRadius, behavior.hoverHeight, behavior.zDeviationRange)
-                        animationController?.playAnimation(FairyAnimation.TURBO_DASH)
+                        avatarController?.requestMovingAnimation()
                     }
                 }
                 
@@ -190,7 +189,7 @@ class FairyBehaviorSystem : System() {
                         behavior.baseY = transform.position.y
                         
                         // 跟随悬停也可以播放一个静止动画
-                        val idleAnim = animationController?.playRandomIdleAnimation()
+                        val idleAnim = avatarController?.requestIdleAnimation()
                         if (idleAnim != null) {
                             behavior.isWaitingForAnimation = true
                             behavior.waitTimer = idleAnim.durationMs / 1000f

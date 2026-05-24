@@ -27,11 +27,10 @@ import com.example.matefairy01.behavior.FairyBehaviorComponent
 import com.example.matefairy01.behavior.BehaviorRuntimeDependencies
 import com.example.matefairy01.behavior.FairyBehaviorSystem
 import com.example.matefairy01.behavior.HMDTagComponent
-import com.example.matefairy01.di.AppModule
 import com.example.matefairy01.input.HandClapDetector
 import com.example.matefairy01.input.InputControllerManager
 import com.example.matefairy01.orchestrator.ConversationOrchestrator
-import com.example.matefairy01.orchestrator.ConversationOrchestratorFactory
+import com.example.matefairy01.runtime.MateFairyRuntimeFactory
 import com.example.matefairy01.ui.FairyDialogueUI
 import com.example.matefairy01.ui.SharedUIManager
 import com.pico.spatial.core.ecs.Entity
@@ -94,9 +93,8 @@ fun HomeStage() {
     val appConfig = remember(context) { AppConfigLoader.load(context) }
     val textInputProvider = SharedUIManager.textInputProvider
     val voiceInputProvider = SharedUIManager.voiceInputProvider
-    val conversationOrchestrator = remember(appConfig) {
-        ConversationOrchestratorFactory.create(appConfig = appConfig)
-    }
+    val appRuntime = remember(appConfig) { MateFairyRuntimeFactory.create(appConfig = appConfig) }
+    val conversationOrchestrator = appRuntime.conversationOrchestrator
     
     // AI 对话状态
     var dialogueText by remember { mutableStateOf("") }
@@ -174,7 +172,7 @@ fun HomeStage() {
         inputControllerManager,
         handClapDetector
     ) {
-        BehaviorRuntimeDependencies.bindAnimationController(AppModule.animationController)
+        BehaviorRuntimeDependencies.bindAvatarController(appRuntime.avatarController)
         hmdTrackingProvider.start()
         controllerTrackingProvider.addControllerActionListener(controllerListener)
         controllerTrackingProvider.start()
@@ -194,7 +192,7 @@ fun HomeStage() {
             controllerTrackingProvider.removeControllerActionListener(controllerListener)
             controllerTrackingProvider.stop()
             handTrackingProvider.stop()
-            AppModule.animationController.cleanup()
+            appRuntime.avatarController.cleanup()
             BehaviorRuntimeDependencies.clear()
             inputControllerManager.cleanup()
             handClapDetector.cleanup()
@@ -372,8 +370,8 @@ fun HomeStage() {
                 }
 
                 // 初始化动画模块（传入 GLB 根节点，以便查找 SkinnedMeshEntity）
-                AppModule.animationController.initialize(glbRoot)
-                AppModule.animationController.playAnimation(com.example.matefairy01.animation.FairyAnimation.TURBO_DASH)
+                appRuntime.avatarController.initialize(glbRoot)
+                appRuntime.avatarController.playSpawnAnimation()
                 
                 addChild(robotModel)
                 
