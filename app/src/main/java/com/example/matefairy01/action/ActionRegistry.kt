@@ -1,7 +1,6 @@
 package com.example.matefairy01.action
 
 import android.util.Log
-import com.pico.spatial.core.ecs.Entity
 
 /**
  * 动作注册表，采用策略模式分发动作意图
@@ -27,12 +26,12 @@ class ActionRegistry {
     /**
      * 根据 intent 分发并执行动作
      */
-    suspend fun dispatchAction(intent: String, fairyEntity: Entity, params: Map<String, Any> = emptyMap()) {
+    suspend fun dispatchAction(intent: String, params: Map<String, Any> = emptyMap()) {
         if (intent.isEmpty() || intent == "none") return
         
         val handler = handlers[intent]
         if (handler != null) {
-            handler.execute(fairyEntity, params)
+            handler.execute(params)
         } else {
             Log.w("ActionRegistry", "No handler found for intent: $intent")
         }

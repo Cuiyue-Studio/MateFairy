@@ -3,11 +3,10 @@ package com.example.matefairy01.behavior
 import com.pico.spatial.core.ecs.System
 import com.pico.spatial.core.ecs.SceneUpdateContext
 import com.pico.spatial.core.ecs.EntityQueryCondition
+import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.ecs.TransformComponent
 import com.pico.spatial.core.math.Vector3
 import com.pico.spatial.core.math.EulerAngles
-import com.example.matefairy01.di.AppModule
-import com.example.matefairy01.animation.FairyAnimation
 import kotlin.math.atan2
 import kotlin.math.sqrt
 import kotlin.math.sin
@@ -15,21 +14,24 @@ import kotlin.math.abs
 import kotlin.random.Random
 
 class FairyBehaviorSystem : System() {
+    private val hmdCondition = EntityQueryCondition.hasComponent(HMDTagComponent::class.java)
+    private val fairyCondition =
+        EntityQueryCondition.hasComponent(FairyBehaviorComponent::class.java)
+
+    private var cachedHmdEntity: Entity? = null
+    private var cachedFairyEntities: List<Entity> = emptyList()
+
     override fun update(context: SceneUpdateContext) {
         val dt = context.deltaTime
 
-        // Find HMD Entity
-        val hmdCondition = EntityQueryCondition.hasComponent(HMDTagComponent::class.java)
-        val hmdEntities = context.scene.queryEntity(hmdCondition)
-        if (hmdEntities.isEmpty()) return
-        val hmdEntity = hmdEntities.first()
+        val hmdEntity = resolveHmdEntity(context) ?: return
         // SDK 提供了 getGlobalPosition() 或者在 Scene 中可以根据层级计算，但 HMD 通常就是世界坐标
         val hmdTransform = hmdEntity.components[TransformComponent::class.java] ?: return
         val hmdPos = hmdTransform.position
+        val avatarController = BehaviorRuntimeDependencies.avatarController
 
-        // Find Fairy Entity
-        val fairyCondition = EntityQueryCondition.hasComponent(FairyBehaviorComponent::class.java)
-        val fairyEntities = context.scene.queryEntity(fairyCondition)
+        val fairyEntities = resolveFairyEntities(context)
+        if (fairyEntities.isEmpty()) return
         
         for (fairyEntity in fairyEntities) {
             val behavior = fairyEntity.components[FairyBehaviorComponent::class.java]!!
@@ -110,7 +112,7 @@ class FairyBehaviorSystem : System() {
                         behavior.state = FairyState.RANDOM_MOVING
                         behavior.waitTimer = 0f
                         behavior.currentTarget = getRandomTargetInInnerRadius(hmdPos, behavior.innerRadius, behavior.hoverHeight, behavior.zDeviationRange)
-                        AppModule.animationModule.playAnimation(FairyAnimation.TURBO_DASH)
+                        avatarController?.requestMovingAnimation()
                     }
                 }
                 
@@ -122,7 +124,7 @@ class FairyBehaviorSystem : System() {
                         behavior.state = FairyState.FOLLOWING
                         behavior.waitTimer = 0f
                         behavior.currentTarget = getRandomTargetInInnerRadius(hmdPos, behavior.innerRadius, behavior.hoverHeight, behavior.zDeviationRange)
-                        AppModule.animationModule.playAnimation(FairyAnimation.TURBO_DASH)
+                        avatarController?.requestMovingAnimation()
                     } else {
                         // Normal random movement inside the inner/buffer zone
                         if (behavior.currentTarget == null || hasReachedTarget(fairyPos, behavior.currentTarget!!)) {
@@ -131,7 +133,7 @@ class FairyBehaviorSystem : System() {
                             behavior.state = FairyState.RANDOM_WAITING
                             
                             // 尝试播放静止时动画
-                            val idleAnim = AppModule.animationModule.playRandomIdleAnimation()
+                            val idleAnim = avatarController?.requestIdleAnimation()
                             if (idleAnim != null) {
                                 behavior.isWaitingForAnimation = true
                                 behavior.waitTimer = idleAnim.durationMs / 1000f
@@ -161,7 +163,7 @@ class FairyBehaviorSystem : System() {
                         behavior.waitTimer = 0f
                         behavior.isWaitingForAnimation = false
                         behavior.currentTarget = getRandomTargetInInnerRadius(hmdPos, behavior.innerRadius, behavior.hoverHeight, behavior.zDeviationRange)
-                        AppModule.animationModule.playAnimation(FairyAnimation.TURBO_DASH)
+                        avatarController?.requestMovingAnimation()
                     }
                     
                     // Check if player moved too far during random waiting
@@ -170,7 +172,7 @@ class FairyBehaviorSystem : System() {
                         behavior.waitTimer = 0f
                         behavior.isWaitingForAnimation = false
                         behavior.currentTarget = getRandomTargetInInnerRadius(hmdPos, behavior.innerRadius, behavior.hoverHeight, behavior.zDeviationRange)
-                        AppModule.animationModule.playAnimation(FairyAnimation.TURBO_DASH)
+                        avatarController?.requestMovingAnimation()
                     }
                 }
                 
@@ -187,7 +189,7 @@ class FairyBehaviorSystem : System() {
                         behavior.baseY = transform.position.y
                         
                         // 跟随悬停也可以播放一个静止动画
-                        val idleAnim = AppModule.animationModule.playRandomIdleAnimation()
+                        val idleAnim = avatarController?.requestIdleAnimation()
                         if (idleAnim != null) {
                             behavior.isWaitingForAnimation = true
                             behavior.waitTimer = idleAnim.durationMs / 1000f
@@ -363,4 +365,33 @@ class FairyBehaviorSystem : System() {
     }
     
     private fun Float.toDegrees() = this * 180f / Math.PI.toFloat()
+
+    private fun resolveHmdEntity(context: SceneUpdateContext): Entity? {
+        val cached = cachedHmdEntity
+        if (cached != null &&
+            cached.components[HMDTagComponent::class.java] != null &&
+            cached.components[TransformComponent::class.java] != null
+        ) {
+            return cached
+        }
+
+        val resolved = context.scene.queryEntity(hmdCondition).firstOrNull()
+        cachedHmdEntity = resolved
+        return resolved
+    }
+
+    private fun resolveFairyEntities(context: SceneUpdateContext): List<Entity> {
+        if (cachedFairyEntities.isNotEmpty() && cachedFairyEntities.all(::isUsableFairyEntity)) {
+            return cachedFairyEntities
+        }
+
+        val resolved = context.scene.queryEntity(fairyCondition).filter(::isUsableFairyEntity)
+        cachedFairyEntities = resolved
+        return resolved
+    }
+
+    private fun isUsableFairyEntity(entity: Entity): Boolean {
+        return entity.components[FairyBehaviorComponent::class.java] != null &&
+            entity.components[TransformComponent::class.java] != null
+    }
 }

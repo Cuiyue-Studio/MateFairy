@@ -16,13 +16,18 @@ class ContextMemorySystem(
     private val llmProvider: ILLMProvider,
     private val windowSize: Int = 3
 ) {
+    private val compressionLock = Any()
+
     // 长期记忆缓存（压缩后的摘要）
     private var longTermMemorySummary: String = ""
 
     // 短期记忆窗口（最近N轮对话）
     private val shortTermMemory = LinkedList<ChatMessage>()
+    private val pendingCompressionMessages = mutableListOf<ChatMessage>()
 
     private val scope = CoroutineScope(Dispatchers.IO)
+    @Volatile
+    private var compressionJobRunning = false
 
     /**
      * 组装最终发给 LLM 的对话 Prompt
@@ -72,21 +77,44 @@ class ContextMemorySystem(
      * 后台异步并行压缩
      */
     private fun triggerAsyncCompression(messagesToCompress: List<ChatMessage>) {
+        synchronized(compressionLock) {
+            pendingCompressionMessages += messagesToCompress
+            if (compressionJobRunning) {
+                return
+            }
+            compressionJobRunning = true
+        }
+
         scope.launch {
             try {
-                // 将被滑出的消息交给 LLM 进行摘要
-                // 实际实现中，这里可能需要构造特定的 Summarize Prompt
-                val newSummary = llmProvider.summarize(messagesToCompress)
-                
-                // 将新摘要合并到长期记忆缓存中
-                longTermMemorySummary = if (longTermMemorySummary.isEmpty()) {
-                    newSummary
-                } else {
-                    "$longTermMemorySummary | $newSummary"
+                while (true) {
+                    val batch =
+                        synchronized(compressionLock) {
+                            if (pendingCompressionMessages.isEmpty()) {
+                                compressionJobRunning = false
+                                return@launch
+                            }
+
+                            pendingCompressionMessages.toList().also {
+                                pendingCompressionMessages.clear()
+                            }
+                        }
+
+                    // 将累计滑出的消息合并摘要，避免同一时间并发触发多次网络压缩
+                    val newSummary = llmProvider.summarize(batch)
+
+                    longTermMemorySummary = if (longTermMemorySummary.isEmpty()) {
+                        newSummary
+                    } else {
+                        "$longTermMemorySummary | $newSummary"
+                    }
+
+                    Log.d("ContextMemorySystem", "Async compression completed. Summary updated.")
                 }
-                
-                Log.d("ContextMemorySystem", "Async compression completed. Summary updated.")
             } catch (e: Exception) {
+                synchronized(compressionLock) {
+                    compressionJobRunning = false
+                }
                 Log.e("ContextMemorySystem", "Failed to compress memory", e)
                 // 如果压缩失败，可以选择暂时重新放回或忽略，取决于容错策略
             }

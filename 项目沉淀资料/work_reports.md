@@ -299,3 +299,185 @@
 ### 四、后续开发建议
 - 继续推进语音输入（ASR）接入，真正释放双手的空间交互能力。
 - 可考虑增加输入面板弹出/关闭时的过渡动画（如透明度渐变、缩放弹出），进一步提升细节质感。
+
+---
+
+## Phase 5.3 工作汇报：高频 Tracking 驱动与 SpatialView 更新路径优化（第一批）
+
+### 一、功能开发完成情况
+1. **创建独立优化分支**：
+   - 新建并切换到了分支 `perf/stage-update`。
+   - 在开始改动前先审查了当前工作区状态，确认大量未跟踪文件主要为历史调试脚本、反射探测测试和 dump 产物，本次优化未触碰这些文件。
+2. **完成第一个优化点：去除顶层 Compose 对高频 tracking 数据的直接订阅**：
+   - 修改文件：[HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt)
+   - 移除了 `HMDTrackingProvider.dataFlow.collectAsState(...)` 和 `HandTrackingProvider.dataFlow.collectAsState(...)` 对顶层 `HomeStage()` 的高频驱动。
+   - 新增 `HomeStageRuntimeState`，将 `latestHmdTrackingData`、`loadedRobotModelEntity`、附件实体引用等转为运行时缓存，避免 HMD/Hand 数据每次更新都触发整棵 Compose 树重组。
+3. **完成第二个优化点：收缩 SpatialView.update 的职责范围**：
+   - 仍在 [HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt) 中调整。
+   - 将手柄输入处理从 `SpatialView.update` 移到 `ControllerActionListener` 中直接消费。
+   - 将拍手检测从 `SpatialView.update` 移到 `HandTrackingProvider.dataFlow` 收集协程中处理。
+   - `SpatialView.update` 现在仅保留附件挂载、输入面板位置同步、HMD 位置写入、对话气泡位置同步等必要的场景变换逻辑。
+4. **补齐低频 UI 状态可观察性，防止功能回归**：
+   - 修改文件：[VoiceInputProvider.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/input/VoiceInputProvider.kt)
+   - 将语音输入的 `isActive` 改为 Compose 可观察的低频状态，确保在移除高频 tracking 重组后，录音态 UI 仍能正常刷新显示。
+
+### 二、编译与测试情况
+- 执行 `./gradlew :app:compileDebugKotlin`，构建成功。
+- 编译过程中 Kotlin daemon 连接失败后自动回退到非 daemon 编译，但不影响本次代码正确性验证。
+- VS Code/IDE 诊断对个别 Kotlin 文件出现了全量未解析的假阳性，但与 Gradle 编译结果不一致，当前以真实编译结果为准。
+
+### 三、技术债务与踩坑记录
+- **高频数据与低频 UI 不能混用同一条 Compose 状态通路**：原先 `HMD/Hand` 的高频状态被直接塞到顶层 `HomeStage()`，任何 tracking 更新都可能放大成整棵树重组。
+- **优化高频重组后，要主动补齐低频 UI 的可观察状态**：`VoiceInputProvider.isListening()` 原本只是普通字段，之前可能借助其他重组“碰巧刷新”；一旦拿掉高频重组，录音 UI 就必须有自己的低频状态源。
+- **`SpatialView.update` 更适合作为变换同步点，而不是通用业务分发器**：输入事件和手势识别如果能在事件流里消费，就不要继续压在每帧 update 中。
+
+### 四、后续开发建议
+- 下一步可以继续处理清单中的第 3、4 个点：`FairyBehaviorSystem` 每帧实体查询减负，以及首屏资源加载拆分。
+- 建议尽快在真机上补一轮 Perfetto / Profiler 采样，重点观察 `System_Update: FairyBehaviorSystem`、`frameDrop`、`LoadEntity_Asset`、`Spatial_App_Initialize`。
+
+---
+
+## Phase 5.4 工作汇报：SpatialView 更新触发机制误判导致的功能回归修复
+
+### 一、问题定位
+1. 上一轮性能优化中，错误地将 `SpatialView.update` 视为稳定的逐帧回调。
+2. 根据 PICO Spatial SDK 文档，`SpatialView.update` 在 `initial` 后自动调用一次，之后依赖 `SpatialView` 内部或父级 Compose state 变化触发，而不是独立 ECS 帧循环。
+3. 由于将 `HMDTrackingProvider.dataFlow` 从 `collectAsState()` 改成普通运行时缓存，导致：
+   - `HMD` 实体位置无法稳定更新到场景中
+   - `FairyBehaviorSystem` 读取到冻结的 HMD 坐标，精灵跟随失效
+   - 输入面板位置同步和朝向链路也因 `SpatialView.update` 触发不足而失效
+
+### 二、修复方案
+- 在 [HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt) 中恢复 `HMDTrackingProvider.dataFlow.collectAsState(...)`
+- 让 `SpatialView.update` 重新随 HMD 状态变化触发，从而恢复：
+  - `HMD` 实体位姿同步
+  - 精灵跟随逻辑依赖的 HMD 坐标更新
+  - 输入框位置跟随和 `LookAtComponent` 相关行为
+- 保留上轮较安全的两项优化：
+  - 控制器输入改为在 `ControllerActionListener` 中直接消费
+  - 拍手检测改为在 `HandTrackingProvider.dataFlow` 收集协程中处理
+
+### 三、编译与验证
+- 执行 `./gradlew :app:compileDebugKotlin`，编译通过。
+- 本次修复属于最小回滚策略，只恢复错误切断的 `HMD -> Compose -> SpatialView.update` 驱动链，不继续扩大重构范围。
+
+### 四、经验总结
+- 在当前工程架构下，`HMD` 高频 tracking 不是一个可以直接从 Compose 中抽离的“纯性能热点”，因为它同时承担了 `SpatialView.update` 的场景同步驱动职责。
+- 后续若要继续优化这一点，必须先把 `HMD` 实体同步、输入框跟随和附件挂载修复迁移到真正独立的帧级更新机制中，再移除 Compose 高频驱动。
+
+---
+
+## Phase 5.5 工作汇报：剩余 P0 性能优化落地（实体查询缓存 + 首屏加载并行化 + 打包优化）
+
+### 一、功能开发完成情况
+1. **优化 `FairyBehaviorSystem` 的每帧实体查询路径**：
+   - 修改文件：[FairyBehaviorSystem.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/behavior/FairyBehaviorSystem.kt)
+   - 将 `HMD` 条件和 `Fairy` 条件提升为系统级缓存，避免每帧重复创建 `EntityQueryCondition`。
+   - 引入 `cachedHmdEntity` 和 `cachedFairyEntities`，优先复用已解析实体；只有缓存为空或缓存实体不再具备所需组件时，才回退到 `queryEntity(...)` 重查。
+   - 保持精灵状态机、旋转逻辑、跟随/悬停语义不变，只优化实体定位成本。
+2. **优化首屏资源加载策略**：
+   - 修改文件：[HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt)
+   - 将 `AssetBundle.load("asset://editor-asset.bundle")` 与 `Entity.load("asset://pico_robot_animated.glb")` 改为在 `initial` 阶段并行加载。
+   - `MyScene` 仍然在 `bundle` 加载完成后按原顺序创建，GLB 也保持原来的模型接入、缩放修正、动画初始化和 Wrapper 结构，不改变显示结果与行为语义。
+3. **补充资源打包优化**：
+   - 修改文件：[app/build.gradle.kts](file:///Users/bytedance/MateFairy/app/build.gradle.kts)
+   - 增加 `androidResources.noCompress`，覆盖 `bundle`、`glb`、`usdz`、`wav`，减少资源压缩/解压对加载链路的额外开销。
+
+### 二、编译与测试情况
+- 执行 `./gradlew :app:compileDebugKotlin`，构建成功。
+- Kotlin daemon 仍因当前环境权限问题回退到非 daemon 编译，但不影响本次改动的有效性验证。
+
+### 三、技术债务与踩坑记录
+- **当前 `FairyBehaviorSystem` 采用的是保守缓存策略**：不依赖 SDK 内部的“实体有效性”私有接口，只用“组件是否仍存在”作为缓存可用性判断，避免因为误判导致精灵逻辑失效。
+- **首屏资源优化以并行化优先，不做激进延迟加载**：由于机器人模型与场景初始交互强相关，现阶段直接 lazy load 风险较高，因此先采取“并行加载但不改语义”的低风险优化方案。
+- **`noCompress` 是低风险收益项**：只影响打包和资源读取路径，不改变功能语义，适合作为 P0 的基础优化配置。
+
+### 四、后续开发建议
+- 下一步可以在真机上重点关注 `LoadAsset`、`LoadEntity_Asset`、`Spatial_App_Initialize` 和 `frameDrop` 计数变化，验证这轮优化是否带来可观收益。
+- 后续若继续做更深层的首屏优化，可以考虑把非关键场景元素拆成按需加载，但前提是先系统梳理哪些资源参与了初始交互链路。
+
+---
+
+## Phase 5.6 工作汇报：剩余 P1 性能优化落地（预热/清理/节流）
+
+### 一、功能开发完成情况
+1. **补充应用启动预热**：
+   - 修改文件：[SpatialApplication.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/platform/SpatialApplication.kt)
+   - 在应用启动阶段用后台协程预热 `AppConfigLoader.load(applicationContext)`，降低首次进入 `HomeStage` 时同步读取配置的主线程压力。
+2. **补齐动画资源释放**：
+   - 修改文件：[HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt)
+   - 在 Stage `onDispose` 中增加 `AppModule.animationModule.cleanup()`，避免 Stage 多次进入退出后动画资源残留。
+3. **优化输入面板超时逻辑**：
+   - 修改文件：[GameUIContainer.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/ui/GameUIContainer.kt)
+   - 将原先 `while(true) + delay(1000)` 的轮询式超时检测改成基于 `lastActiveTime` 的单次定时等待，避免每秒唤醒一次协程。
+4. **优化语音识别器生命周期**：
+   - 修改文件：[VoiceInputProvider.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/input/VoiceInputProvider.kt)
+   - 改为复用 `SpeechRecognizer` 实例与 `RecognitionListener`，`stopListening()` 只停止本次监听，不再每次都销毁实例。
+   - 新增 `cleanup()`，在 Stage 清理时统一释放底层语音识别资源。
+   - 修改文件：[InputControllerManager.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/input/InputControllerManager.kt)
+   - 清理路径改为调用 `voiceInputProvider.cleanup()`。
+5. **优化上下文摘要压缩触发方式**：
+   - 修改文件：[ContextMemorySystem.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/memory/ContextMemorySystem.kt)
+   - 将原先“每次滑窗溢出就立即发起一条摘要请求”的方式，改成“累计待压缩消息 + 串行批处理”的节流策略，避免短时间并发发起多次摘要网络请求。
+6. **限制 AutoTest 仅在可调试环境生效**：
+   - 修改文件：[HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt)
+   - `autoTest` 现在要求 `FLAG_DEBUGGABLE` 且配置启用，避免发布包误触发周期性 AI 请求。
+
+### 二、编译与测试情况
+- 执行 `./gradlew :app:compileDebugKotlin`，构建成功。
+- 本轮未继续触碰 `HMD -> Compose -> SpatialView.update` 的空间跟随链路，主要验证重点放在编译正确性和资源生命周期。
+
+### 三、技术债务与踩坑记录
+- **`SpeechRecognizer` 复用与释放要分开处理**：日常启停只需要 `stopListening()`，真正离开 Stage 或生命周期结束时才应调用 `destroy()`。
+- **配置预热要放在应用级别做后台化，而不是在 `HomeStage` 里继续同步搬运**：这样既能保留 `AppConfigLoader` 的缓存语义，也不会把复杂度扩散到 Stage 逻辑。
+- **摘要压缩的主要问题是请求风暴而不是单次耗时**：因此优先做串行合并，而不是先改模型或 Prompt。
+
+### 四、后续开发建议
+- 下一步建议在真机上观察长时间会话下的网络请求频率、内存曲线和动画资源计数，验证 `ContextMemorySystem` 与 `AnimationModule` 的收益。
+- 如果后续还要继续推进更深层 `P1/P2`，可以再评估 `AppConfig` 是否需要彻底异步化到 UI 侧，以及是否要为语音识别增加错误重试与能力检测。
+
+---
+
+## Phase 6 工作汇报：大模型编排层与运行时装配解耦重构
+
+### 一、功能开发完成情况
+1. **抽离对话编排层**：
+   - 新增 `orchestrator/ConversationOrchestrator.kt`，将原先散落在 `HomeStage.kt` 中的 `memory -> llm -> emotion -> action` 调度链整体迁出。
+   - `HomeStage` 现在只负责收集输入、更新 UI、装配运行时对象，不再直接串联大模型与下游模块。
+2. **引入端口与适配器边界**：
+   - 新增 `orchestrator/ports/EmotionCommandPort.kt`、`ActionCommandPort.kt` 与对应 adapter。
+   - 让编排层只依赖“能力接口”，不直接依赖 `EmotionEngine` / `ActionRegistry` 具体实现。
+3. **去除动作/情绪公共接口中的 `Entity` 依赖**：
+   - 修改 `IEmotionRenderer.kt`、`EmotionEngine.kt`、`IActionHandler.kt`、`ActionRegistry.kt`。
+   - 现在公共协议层已经不再暴露 PICO `Entity`，业务意图与场景对象实现完成第一轮隔离。
+4. **动画与行为之间建立控制边界**：
+   - 新增 `animation/AnimationController.kt`，由 `AnimationModule.kt` 实现。
+   - `FairyBehaviorSystem.kt` 不再依赖具体动画模块类，而是通过统一能力接口发起动画请求。
+5. **引入 AvatarController 与显式运行时图**：
+   - 新增 `avatar/AvatarController.kt`、`avatar/DefaultAvatarController.kt`、`runtime/MateFairyRuntime.kt`、`runtime/MateFairyRuntimeFactory.kt`。
+   - `HomeStage` 改为只持有一个 `MateFairyRuntime`，统一拿到 `conversationOrchestrator` 与 `avatarController`。
+6. **清理全局 Service Locator 主链**：
+   - 删除 `di/AppModule.kt` 与 `orchestrator/ConversationOrchestratorFactory.kt`。
+   - 当前运行主链已不再依赖全局 `AppModule`，运行时装配显式化。
+7. **行为系统去全局依赖**：
+   - 新增 `behavior/BehaviorRuntimeDependencies.kt` 作为行为模块内部的薄桥接层。
+   - `FairyBehaviorSystem.kt` 不再直接依赖 `AppModule`，而是依赖 `AvatarController`。
+
+### 二、编译与测试情况
+- 本轮多次执行 `./gradlew :app:compileDebugKotlin`，均为 `BUILD SUCCESSFUL`。
+- 关键阶段提交已分别落盘并推送到 `origin/perf/stage-update`，可按检查点回滚：
+  - `1e0f239`：对话编排层与端口边界
+  - `88e8dec`：动画控制接口边界
+  - `cac6b1a`：行为系统去 `AppModule`
+  - `19882cb`：显式运行时图替代全局装配
+
+### 三、技术债务与踩坑记录
+- **IDE 诊断与 Gradle 编译结果不一致**：`HomeStage.kt` 在编辑器中仍可能出现大批未解析假阳性，但真实 Gradle Kotlin 编译通过，当前应以构建结果为准。
+- **解耦不能一步到位硬切 ECS 生命周期**：`FairyBehaviorSystem` 的系统注册仍由 `HomeStage` 生命周期驱动，因此本轮采用“模块内桥接层 + 上层显式装配”的渐进式方案，避免直接重写系统注入机制。
+- **文档 skill 路径已过期**：`doc-maintainer` skill 中给出的旧工程路径无效，当前项目文档真实路径为 `/Users/bytedance/MateFairy/项目沉淀资料/`。
+
+### 四、后续开发建议
+1. 继续把 `BehaviorRuntimeDependencies` 演进成更显式的场景级依赖注入对象，减少模块内单例桥接。
+2. 为 `ActionRegistry` 真正补齐可注册的动作处理器，实现 LLM 意图到 `AvatarController` 能力的稳定映射。
+3. 将 `AIResponse` 继续升级为命令列表式结构，逐步替换当前 `reply_text / emotion / action_intent` 的三元协议。
+4. 若后续要继续深度优化，可考虑把 `HMD` 与附件同步迁移到真正独立的 ECS/帧级更新机制，进一步减少 `HomeStage` 中的运行时装配负担。

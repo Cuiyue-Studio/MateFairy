@@ -38,6 +38,9 @@ android {
     buildFeatures {
         compose = true
     }
+    androidResources {
+        noCompress += listOf("bundle", "glb", "usdz", "wav")
+    }
 }
 
 dependencies {

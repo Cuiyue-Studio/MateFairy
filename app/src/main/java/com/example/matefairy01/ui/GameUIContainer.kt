@@ -26,12 +26,17 @@ fun GameUIContainer() {
     // 10s 超时检测逻辑
     LaunchedEffect(textInputProvider.showInputDialog, textInputProvider.lastActiveTime) {
         if (textInputProvider.showInputDialog) {
-            while (true) {
-                delay(1000) // 每秒检查一次
-                if (System.currentTimeMillis() - textInputProvider.lastActiveTime > 10_000) {
-                    textInputProvider.cancelInput() // 超过10秒不活跃，自动关闭
-                    break
-                }
+            val remainingMs =
+                (10_000 - (System.currentTimeMillis() - textInputProvider.lastActiveTime))
+                    .coerceAtLeast(0)
+
+            delay(remainingMs)
+
+            if (
+                textInputProvider.showInputDialog &&
+                System.currentTimeMillis() - textInputProvider.lastActiveTime >= 10_000
+            ) {
+                textInputProvider.cancelInput()
             }
         }
     }

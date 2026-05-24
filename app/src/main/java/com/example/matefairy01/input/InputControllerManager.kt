@@ -158,7 +158,7 @@ class InputControllerManager(
         longPressRunnable?.let { mainHandler.removeCallbacks(it) }
         doubleClickRunnable?.let { mainHandler.removeCallbacks(it) }
         textInputProvider.stopListening()
-        voiceInputProvider.stopListening()
+        voiceInputProvider.cleanup()
         activeInputProvider = null
     }
 }
