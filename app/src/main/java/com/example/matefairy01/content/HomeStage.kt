@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.matefairy01.config.AppConfigLoader
 import com.example.matefairy01.behavior.FairyBehaviorComponent
+import com.example.matefairy01.behavior.BehaviorRuntimeDependencies
 import com.example.matefairy01.behavior.FairyBehaviorSystem
 import com.example.matefairy01.behavior.HMDTagComponent
 import com.example.matefairy01.di.AppModule
@@ -173,6 +174,7 @@ fun HomeStage() {
         inputControllerManager,
         handClapDetector
     ) {
+        BehaviorRuntimeDependencies.bindAnimationController(AppModule.animationController)
         hmdTrackingProvider.start()
         controllerTrackingProvider.addControllerActionListener(controllerListener)
         controllerTrackingProvider.start()
@@ -193,6 +195,7 @@ fun HomeStage() {
             controllerTrackingProvider.stop()
             handTrackingProvider.stop()
             AppModule.animationController.cleanup()
+            BehaviorRuntimeDependencies.clear()
             inputControllerManager.cleanup()
             handClapDetector.cleanup()
         }
