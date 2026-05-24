@@ -290,48 +290,24 @@ fun HomeStage() {
                     if (inputEntity.components[TransformComponent::class.java] == null) {
                         inputEntity.components[TransformComponent::class.java] = TransformComponent()
                     }
-                    if (inputEntity.components[LookAtComponent::class.java] == null) {
-                        inputEntity.components[LookAtComponent::class.java] = LookAtComponent().apply {
-                            setViewerAsTarget()
-                            alignLocalUpToWorldUp = true
-                        }
-                    }
-                    content.addEntity(inputEntity)
+                    hmdEntity.addChild(inputEntity)
                 }
 
-                // 计算头部前方 0.65m 的位置，并略微降低高度
-                val hmdPose = hmdTrackingData.hmdPose
-                
-                // 计算头部前方 0.65m 的位置，并略微降低高度
-                // PICO SDK 的 Quat.toEulerAngles() 返回的是 EulerAngles 对象
-                val euler = hmdPose.rotation.toEulerAngles()
-                
-                // 这里的 euler 是以度为单位（通常是这样），需要转换为弧度
-                val yawRad = Math.toRadians(euler.yaw.toDouble())
-                val pitchRad = Math.toRadians(euler.pitch.toDouble())
-                
-                // 简单的欧拉角转方向向量（Y-up, Z 轴负方向为前向）
-                val forwardX = -kotlin.math.sin(yawRad) * kotlin.math.cos(pitchRad)
-                val forwardY = kotlin.math.sin(pitchRad)
-                val forwardZ = -kotlin.math.cos(yawRad) * kotlin.math.cos(pitchRad)
-                
-                val distance = 0.65f
-                val targetPos = Vector3(
-                    hmdPose.position.x + (forwardX * distance).toFloat(),
-                    hmdPose.position.y + (forwardY * distance).toFloat() - 0.15f,
-                    hmdPose.position.z + (forwardZ * distance).toFloat()
-                )
-                
-                inputEntity.components[TransformComponent::class.java]?.setPosition(targetPos)
+                val localOffset = Vector3(0f, -0.15f, -0.65f)
+                inputEntity.components[TransformComponent::class.java]?.apply {
+                    setPosition(localOffset)
+                    setQuaternion(Quat.identity())
+                }
             }
 
             // 更新 HMD 位置 - 直接使用追踪数据的世界坐标
             hmdTrackingData.hmdPose.let { pose ->
                 val transformComponent = hmdEntity.components[TransformComponent::class.java]
                 transformComponent?.apply {
-                    // HMD 追踪数据已经是场景世界坐标，直接设置
-                    setPosition(pose.position)
-                    setQuaternion(pose.rotation)
+                    val convertedPosition = rootEntity.convertPositionFrom(pose.position, null)
+                    val convertedRotation = rootEntity.convertRotationFrom(pose.rotation, null)
+                    setPosition(convertedPosition)
+                    setQuaternion(convertedRotation)
                 }
             }
 
@@ -447,9 +423,7 @@ fun HomeStage() {
             
             content.addEntity(rootEntity)
 
-            // HMD 实体直接添加到场景 content 中（不是任何实体的子节点）
-            // 这样 HMD 位置就是绝对世界坐标，与精灵模型在同一坐标系中
-            content.addEntity(hmdEntity)
+            rootEntity.addChild(hmdEntity)
         },
         attachments = {
             // AI 回复对话气泡面板 (关联到 text 附件)
