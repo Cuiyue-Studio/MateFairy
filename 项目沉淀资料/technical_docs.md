@@ -815,3 +815,148 @@ AppModule.animationModule.cleanup()
 - [VoiceInputProvider.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/input/VoiceInputProvider.kt)
 - [InputControllerManager.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/input/InputControllerManager.kt)
 - [ContextMemorySystem.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/memory/ContextMemorySystem.kt)
+
+## Phase 6 技术交接文档：显式运行时图与 AvatarController 解耦重构
+
+### 1. 阶段概述
+本阶段核心目标是把“场景层直接编排一切”改造成“场景层负责装配，编排层负责流程，控制层负责能力协调”的结构。重点完成了三件事：
+1. 将 AI 对话调度从 `HomeStage` 抽成独立的 `ConversationOrchestrator`
+2. 将动作/情绪/动画等公共协议从 `Entity` 与全局单例中抽离
+3. 用显式的 `MateFairyRuntime` 替代原有 `AppModule` 主链
+
+### 2. 核心架构与类说明
+
+#### 2.1 `ConversationOrchestrator`
+- 路径：[ConversationOrchestrator.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/orchestrator/ConversationOrchestrator.kt)
+- 职责：
+  1. 接收用户文本输入
+  2. 写入 `ContextMemorySystem`
+  3. 构建 prompt 并调用 `ILLMProvider`
+  4. 根据返回结果触发 `EmotionCommandPort` 和 `ActionCommandPort`
+- 设计结果：
+  - `HomeStage` 不再直接持有 `ContextMemorySystem`、`EmotionEngine`、`ActionRegistry`
+  - 编排逻辑可以独立测试和替换
+
+#### 2.2 端口与适配器层
+- 路径：
+  - [EmotionCommandPort.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/orchestrator/ports/EmotionCommandPort.kt)
+  - [ActionCommandPort.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/orchestrator/ports/ActionCommandPort.kt)
+  - [EmotionEnginePortAdapter.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/orchestrator/adapters/EmotionEnginePortAdapter.kt)
+  - [ActionRegistryPortAdapter.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/orchestrator/adapters/ActionRegistryPortAdapter.kt)
+- 设计思路：
+  - 编排层依赖稳定端口
+  - 具体引擎通过 adapter 适配进来
+  - `Entity` 依赖不再进入 orchestrator 与公共协议层
+
+#### 2.3 公共协议升级
+- 修改文件：
+  - [IEmotionRenderer.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/emotion/IEmotionRenderer.kt)
+  - [EmotionEngine.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/emotion/EmotionEngine.kt)
+  - [IActionHandler.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/action/IActionHandler.kt)
+  - [ActionRegistry.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/action/ActionRegistry.kt)
+- 变化说明：
+  - `IEmotionRenderer.renderEmotion(emotion: String)` 不再接收 `Entity`
+  - `EmotionEngine.triggerEmotion(emotion: String)` / `resetEmotion()` 不再接收 `Entity`
+  - `IActionHandler.execute(params)` 与 `ActionRegistry.dispatchAction(intent, params)` 也不再接收 `Entity`
+- 意义：
+  - 领域协议与 PICO 场景实体解耦
+  - 为后续把动作和情绪映射到更多执行端预留空间
+
+#### 2.4 `AnimationController` 与 `AvatarController`
+- 路径：
+  - [AnimationController.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/animation/AnimationController.kt)
+  - [AvatarController.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/avatar/AvatarController.kt)
+  - [DefaultAvatarController.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/avatar/DefaultAvatarController.kt)
+- 分层关系：
+  1. `AnimationController`：动画模块对外的稳定能力接口
+  2. `AvatarController`：精灵形象层的更高层控制接口，统一收口“初始化、出生动画、移动动画、闲置动画、清理”
+  3. `DefaultAvatarController`：当前基于 `AnimationController` 的默认实现
+- 当前接口示意：
+
+```kotlin
+interface AvatarController {
+    fun initialize(robotEntity: Entity)
+    fun playSpawnAnimation()
+    fun requestMovingAnimation()
+    fun requestIdleAnimation(): FairyAnimation?
+    fun cleanup()
+}
+```
+
+- 设计原因：
+  - `FairyBehaviorSystem` 不应该知道“动画模块是什么实现”
+  - `HomeStage` 也不应直接控制具体动画细节
+  - 后续若引入动作仲裁器、情绪动画混播，只需要扩展 `AvatarController`
+
+#### 2.5 行为模块内部桥接层
+- 路径：[BehaviorRuntimeDependencies.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/behavior/BehaviorRuntimeDependencies.kt)
+- 当前职责：
+  - 保存行为系统运行时需要的 `AvatarController`
+  - 由 `HomeStage` 在 `DisposableEffect` 中绑定和清理
+- 说明：
+  - 这是一个有意保留的“薄桥接层”
+  - 目标是先切断 `FairyBehaviorSystem -> AppModule` 的跨模块依赖，再逐步演进成更显式的系统注入方式
+
+#### 2.6 显式运行时图 `MateFairyRuntime`
+- 路径：
+  - [MateFairyRuntime.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/runtime/MateFairyRuntime.kt)
+  - [MateFairyRuntimeFactory.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/runtime/MateFairyRuntimeFactory.kt)
+- 运行时图内容：
+  - `conversationOrchestrator`
+  - `avatarController`
+- `MateFairyRuntimeFactory.create(appConfig)` 负责集中创建：
+  1. `ILLMProvider`
+  2. `ContextMemorySystem`
+  3. `EmotionEngine`
+  4. `ActionRegistry`
+  5. `AnimationModule`
+  6. `DefaultAvatarController`
+  7. `ConversationOrchestrator`
+
+### 3. 逻辑流程
+1. `HomeStage` 读取配置并 `remember` 一个 `MateFairyRuntime`
+2. `HomeStage` 将 `runtime.avatarController` 绑定给 `BehaviorRuntimeDependencies`
+3. `HomeStage` 收到文本/语音/拍手输入后，统一调用 `conversationOrchestrator`
+4. `ConversationOrchestrator` 完成记忆拼装、LLM 请求和情绪/动作分发
+5. `FairyBehaviorSystem` 在 ECS 每帧更新中只向 `AvatarController` 申请“移动动画”或“闲置动画”
+6. `HomeStage` 在模型加载完成后调用 `avatarController.initialize()` 与 `playSpawnAnimation()`
+7. Stage 销毁时由 `HomeStage` 统一执行 `avatarController.cleanup()` 并清理行为桥接依赖
+
+### 4. SDK/框架避坑指南
+1. **IDE 诊断不能替代真实编译**：
+   当前 `HomeStage.kt` 在编辑器中偶发大量未解析假阳性，但 `./gradlew :app:compileDebugKotlin` 持续通过，必须以 Gradle 构建结果为准。
+2. **ECS 系统注入不要激进重写**：
+   在不彻底掌握 PICO `registerSystem<T>()` 注入机制前，优先采用“薄桥接层 + 上层显式绑定”的渐进方案，风险远低于直接改系统构造方式。
+3. **公共协议不应再暴露 `Entity`**：
+   一旦公共接口参数带 `Entity`，编排层和业务协议就会反向绑死在 PICO 场景实现上，后续动作/情绪模块的复用性会急剧下降。
+
+### 5. 设计说明
+- 本轮重构刻意遵循“小步快跑、每步可回滚”的策略，原因是该项目当前已经存在：
+  - 空间 UI 与 `SpatialView.update` 的强时序关系
+  - PICO SDK 行为系统与场景生命周期的紧耦合
+  - 编辑器诊断与真实编译不一致的问题
+- 因此采用了以下顺序：
+  1. 先抽编排层
+  2. 再抽端口层
+  3. 再去掉公共协议里的 `Entity`
+  4. 再引入动画/精灵控制边界
+  5. 最后删除 `AppModule`，改为显式运行时图
+
+### 6. 本阶段修改文件
+- [HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt)
+- [ConversationOrchestrator.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/orchestrator/ConversationOrchestrator.kt)
+- [EmotionCommandPort.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/orchestrator/ports/EmotionCommandPort.kt)
+- [ActionCommandPort.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/orchestrator/ports/ActionCommandPort.kt)
+- [EmotionEnginePortAdapter.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/orchestrator/adapters/EmotionEnginePortAdapter.kt)
+- [ActionRegistryPortAdapter.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/orchestrator/adapters/ActionRegistryPortAdapter.kt)
+- [IEmotionRenderer.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/emotion/IEmotionRenderer.kt)
+- [EmotionEngine.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/emotion/EmotionEngine.kt)
+- [IActionHandler.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/action/IActionHandler.kt)
+- [ActionRegistry.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/action/ActionRegistry.kt)
+- [AnimationController.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/animation/AnimationController.kt)
+- [AvatarController.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/avatar/AvatarController.kt)
+- [DefaultAvatarController.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/avatar/DefaultAvatarController.kt)
+- [BehaviorRuntimeDependencies.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/behavior/BehaviorRuntimeDependencies.kt)
+- [FairyBehaviorSystem.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/behavior/FairyBehaviorSystem.kt)
+- [MateFairyRuntime.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/runtime/MateFairyRuntime.kt)
+- [MateFairyRuntimeFactory.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/runtime/MateFairyRuntimeFactory.kt)

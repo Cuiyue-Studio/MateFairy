@@ -435,3 +435,49 @@
 ### 四、后续开发建议
 - 下一步建议在真机上观察长时间会话下的网络请求频率、内存曲线和动画资源计数，验证 `ContextMemorySystem` 与 `AnimationModule` 的收益。
 - 如果后续还要继续推进更深层 `P1/P2`，可以再评估 `AppConfig` 是否需要彻底异步化到 UI 侧，以及是否要为语音识别增加错误重试与能力检测。
+
+---
+
+## Phase 6 工作汇报：大模型编排层与运行时装配解耦重构
+
+### 一、功能开发完成情况
+1. **抽离对话编排层**：
+   - 新增 `orchestrator/ConversationOrchestrator.kt`，将原先散落在 `HomeStage.kt` 中的 `memory -> llm -> emotion -> action` 调度链整体迁出。
+   - `HomeStage` 现在只负责收集输入、更新 UI、装配运行时对象，不再直接串联大模型与下游模块。
+2. **引入端口与适配器边界**：
+   - 新增 `orchestrator/ports/EmotionCommandPort.kt`、`ActionCommandPort.kt` 与对应 adapter。
+   - 让编排层只依赖“能力接口”，不直接依赖 `EmotionEngine` / `ActionRegistry` 具体实现。
+3. **去除动作/情绪公共接口中的 `Entity` 依赖**：
+   - 修改 `IEmotionRenderer.kt`、`EmotionEngine.kt`、`IActionHandler.kt`、`ActionRegistry.kt`。
+   - 现在公共协议层已经不再暴露 PICO `Entity`，业务意图与场景对象实现完成第一轮隔离。
+4. **动画与行为之间建立控制边界**：
+   - 新增 `animation/AnimationController.kt`，由 `AnimationModule.kt` 实现。
+   - `FairyBehaviorSystem.kt` 不再依赖具体动画模块类，而是通过统一能力接口发起动画请求。
+5. **引入 AvatarController 与显式运行时图**：
+   - 新增 `avatar/AvatarController.kt`、`avatar/DefaultAvatarController.kt`、`runtime/MateFairyRuntime.kt`、`runtime/MateFairyRuntimeFactory.kt`。
+   - `HomeStage` 改为只持有一个 `MateFairyRuntime`，统一拿到 `conversationOrchestrator` 与 `avatarController`。
+6. **清理全局 Service Locator 主链**：
+   - 删除 `di/AppModule.kt` 与 `orchestrator/ConversationOrchestratorFactory.kt`。
+   - 当前运行主链已不再依赖全局 `AppModule`，运行时装配显式化。
+7. **行为系统去全局依赖**：
+   - 新增 `behavior/BehaviorRuntimeDependencies.kt` 作为行为模块内部的薄桥接层。
+   - `FairyBehaviorSystem.kt` 不再直接依赖 `AppModule`，而是依赖 `AvatarController`。
+
+### 二、编译与测试情况
+- 本轮多次执行 `./gradlew :app:compileDebugKotlin`，均为 `BUILD SUCCESSFUL`。
+- 关键阶段提交已分别落盘并推送到 `origin/perf/stage-update`，可按检查点回滚：
+  - `1e0f239`：对话编排层与端口边界
+  - `88e8dec`：动画控制接口边界
+  - `cac6b1a`：行为系统去 `AppModule`
+  - `19882cb`：显式运行时图替代全局装配
+
+### 三、技术债务与踩坑记录
+- **IDE 诊断与 Gradle 编译结果不一致**：`HomeStage.kt` 在编辑器中仍可能出现大批未解析假阳性，但真实 Gradle Kotlin 编译通过，当前应以构建结果为准。
+- **解耦不能一步到位硬切 ECS 生命周期**：`FairyBehaviorSystem` 的系统注册仍由 `HomeStage` 生命周期驱动，因此本轮采用“模块内桥接层 + 上层显式装配”的渐进式方案，避免直接重写系统注入机制。
+- **文档 skill 路径已过期**：`doc-maintainer` skill 中给出的旧工程路径无效，当前项目文档真实路径为 `/Users/bytedance/MateFairy/项目沉淀资料/`。
+
+### 四、后续开发建议
+1. 继续把 `BehaviorRuntimeDependencies` 演进成更显式的场景级依赖注入对象，减少模块内单例桥接。
+2. 为 `ActionRegistry` 真正补齐可注册的动作处理器，实现 LLM 意图到 `AvatarController` 能力的稳定映射。
+3. 将 `AIResponse` 继续升级为命令列表式结构，逐步替换当前 `reply_text / emotion / action_intent` 的三元协议。
+4. 若后续要继续深度优化，可考虑把 `HMD` 与附件同步迁移到真正独立的 ECS/帧级更新机制，进一步减少 `HomeStage` 中的运行时装配负担。
