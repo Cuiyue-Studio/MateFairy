@@ -15,22 +15,22 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import com.example.matefairy01.ai.ChatMessage
-import com.example.matefairy01.ai.LLMProviderFactory
 import com.example.matefairy01.config.AppConfigLoader
 import com.example.matefairy01.behavior.FairyBehaviorComponent
 import com.example.matefairy01.behavior.FairyBehaviorSystem
 import com.example.matefairy01.behavior.HMDTagComponent
 import com.example.matefairy01.di.AppModule
-import com.example.matefairy01.emotion.IEmotionRenderer
 import com.example.matefairy01.input.HandClapDetector
 import com.example.matefairy01.input.InputControllerManager
+import com.example.matefairy01.orchestrator.ConversationOrchestrator
+import com.example.matefairy01.orchestrator.ConversationOrchestratorFactory
 import com.example.matefairy01.ui.FairyDialogueUI
 import com.example.matefairy01.ui.SharedUIManager
 import com.pico.spatial.core.ecs.Entity
@@ -93,6 +93,9 @@ fun HomeStage() {
     val appConfig = remember(context) { AppConfigLoader.load(context) }
     val textInputProvider = SharedUIManager.textInputProvider
     val voiceInputProvider = SharedUIManager.voiceInputProvider
+    val conversationOrchestrator = remember(appConfig) {
+        ConversationOrchestratorFactory.create(appConfig = appConfig)
+    }
     
     // AI 对话状态
     var dialogueText by remember { mutableStateOf("") }
@@ -106,23 +109,30 @@ fun HomeStage() {
         )
     }
 
+    val updateDialogueUi: (String) -> Unit = { text ->
+        dialogueText = text
+        dialogueBubbleState = dialogueBubbleState.copy(
+            text = text,
+            isVisible = true
+        )
+    }
+    val updateProcessingState: (Boolean) -> Unit = { processing ->
+        isProcessing = processing
+    }
+    val submitUserInputState = rememberUpdatedState<(CoroutineScope, String) -> Unit>(
+        { submitScope, text ->
+            handleUserInput(
+                text = text,
+                scope = submitScope,
+                orchestrator = conversationOrchestrator,
+                onDialogueUpdate = updateDialogueUi,
+                onProcessing = updateProcessingState
+            )
+        }
+    )
+
     // 监听全局状态，动态打开或关闭 UI 容器
     // 已经移除了对 navigator.openWindowContainer 的调用，回归原生 3D Compose UI 方案
-
-    // 初始化 AI 模块
-    DisposableEffect(appConfig) {
-        val provider = LLMProviderFactory.create(appConfig.ai)
-        val emotionRenderer = object : IEmotionRenderer {
-            override fun renderEmotion(emotion: String, fairyEntity: Entity) {
-                // 简单的情绪渲染：这里可以扩展为播放动画或改变材质
-            }
-        }
-        AppModule.initialize(
-            provider = provider,
-            renderer = emotionRenderer
-        )
-        onDispose { }
-    }
 
     // 输入控制器管理器（手柄模式）
     val inputControllerManager = remember {
@@ -130,34 +140,10 @@ fun HomeStage() {
             textInputProvider = textInputProvider,
             voiceInputProvider = voiceInputProvider,
             onTextInputResult = { text ->
-                handleUserInput(
-                    text,
-                    scope,
-                    fairyEntityProvider = { runtimeState.loadedRobotModelEntity },
-                    onDialogueUpdate = {
-                        dialogueText = it
-                        dialogueBubbleState = dialogueBubbleState.copy(
-                            text = it,
-                            isVisible = true
-                        )
-                    },
-                    onProcessing = { isProcessing = it }
-                )
+                submitUserInputState.value(scope, text)
             },
             onVoiceInputResult = { text ->
-                handleUserInput(
-                    text,
-                    scope,
-                    fairyEntityProvider = { runtimeState.loadedRobotModelEntity },
-                    onDialogueUpdate = {
-                        dialogueText = it
-                        dialogueBubbleState = dialogueBubbleState.copy(
-                            text = it,
-                            isVisible = true
-                        )
-                    },
-                    onProcessing = { isProcessing = it }
-                )
+                submitUserInputState.value(scope, text)
             }
         )
     }
@@ -167,19 +153,7 @@ fun HomeStage() {
         HandClapDetector {
             // 检测到3次拍手，开始语音输入
             voiceInputProvider.startListening { result ->
-                handleUserInput(
-                    result, 
-                    scope, 
-                    fairyEntityProvider = { runtimeState.loadedRobotModelEntity },
-                    onDialogueUpdate = { 
-                        dialogueText = it
-                        dialogueBubbleState = dialogueBubbleState.copy(
-                            text = it,
-                            isVisible = true
-                        )
-                    }, 
-                    onProcessing = { isProcessing = it }
-                )
+                submitUserInputState.value(scope, result)
             }
         }
     }
@@ -235,19 +209,7 @@ fun HomeStage() {
                     while (isActive) {
                         val prompt = appConfig.ai.autoTest.promptPool.randomOrNull()
                         if (!prompt.isNullOrBlank()) {
-                            handleUserInput(
-                                text = prompt,
-                                scope = this,
-                                fairyEntityProvider = { runtimeState.loadedRobotModelEntity },
-                                onDialogueUpdate = {
-                                    dialogueText = it
-                                    dialogueBubbleState = dialogueBubbleState.copy(
-                                        text = it,
-                                        isVisible = true
-                                    )
-                                },
-                                onProcessing = { isProcessing = it }
-                            )
+                            submitUserInputState.value(this, prompt)
                         }
                         delay(appConfig.ai.autoTest.intervalMs.coerceAtLeast(1000L))
                     }
@@ -457,7 +419,7 @@ fun HomeStage() {
 private fun handleUserInput(
     text: String,
     scope: CoroutineScope,
-    fairyEntityProvider: () -> Entity?,
+    orchestrator: ConversationOrchestrator,
     onDialogueUpdate: (String) -> Unit,
     onProcessing: (Boolean) -> Unit
 ) {
@@ -466,25 +428,8 @@ private fun handleUserInput(
         onDialogueUpdate("思考中...")
 
         try {
-            // 添加用户消息到上下文
-            AppModule.contextMemorySystem.addMessage(ChatMessage(role = "user", content = text))
-
-            // 构建 Prompt 并请求 AI
-            val messages = AppModule.contextMemorySystem.buildPromptMessages()
-            val response = AppModule.llmProvider.chat(messages)
-
-            // 添加 AI 回复到上下文
-            AppModule.contextMemorySystem.addMessage(
-                ChatMessage(role = "assistant", content = response.reply_text)
-            )
-
-            // 更新对话显示
-            onDialogueUpdate(response.reply_text)
-
-            // 触发情绪和动作
-            AppModule.emotionEngine.triggerEmotion(response.emotion, fairyEntityProvider() ?: Entity())
-            AppModule.actionRegistry.dispatchAction(response.action_intent, fairyEntityProvider() ?: Entity())
-
+            val result = orchestrator.processUserInput(text = text)
+            onDialogueUpdate(result.replyText)
         } catch (e: Exception) {
             onDialogueUpdate("抱歉，我遇到了一些问题，请稍后再试。")
         } finally {
