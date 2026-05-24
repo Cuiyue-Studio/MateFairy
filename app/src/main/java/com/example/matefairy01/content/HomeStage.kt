@@ -192,7 +192,7 @@ fun HomeStage() {
             controllerTrackingProvider.removeControllerActionListener(controllerListener)
             controllerTrackingProvider.stop()
             handTrackingProvider.stop()
-            AppModule.animationModule.cleanup()
+            AppModule.animationController.cleanup()
             inputControllerManager.cleanup()
             handClapDetector.cleanup()
         }
@@ -369,8 +369,8 @@ fun HomeStage() {
                 }
 
                 // 初始化动画模块（传入 GLB 根节点，以便查找 SkinnedMeshEntity）
-                AppModule.animationModule.initialize(glbRoot)
-                AppModule.animationModule.playAnimation(com.example.matefairy01.animation.FairyAnimation.TURBO_DASH)
+                AppModule.animationController.initialize(glbRoot)
+                AppModule.animationController.playAnimation(com.example.matefairy01.animation.FairyAnimation.TURBO_DASH)
                 
                 addChild(robotModel)
                 

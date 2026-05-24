@@ -113,7 +113,7 @@ class FairyBehaviorSystem : System() {
                         behavior.state = FairyState.RANDOM_MOVING
                         behavior.waitTimer = 0f
                         behavior.currentTarget = getRandomTargetInInnerRadius(hmdPos, behavior.innerRadius, behavior.hoverHeight, behavior.zDeviationRange)
-                        AppModule.animationModule.playAnimation(FairyAnimation.TURBO_DASH)
+                        AppModule.animationController.playAnimation(FairyAnimation.TURBO_DASH)
                     }
                 }
                 
@@ -125,7 +125,7 @@ class FairyBehaviorSystem : System() {
                         behavior.state = FairyState.FOLLOWING
                         behavior.waitTimer = 0f
                         behavior.currentTarget = getRandomTargetInInnerRadius(hmdPos, behavior.innerRadius, behavior.hoverHeight, behavior.zDeviationRange)
-                        AppModule.animationModule.playAnimation(FairyAnimation.TURBO_DASH)
+                        AppModule.animationController.playAnimation(FairyAnimation.TURBO_DASH)
                     } else {
                         // Normal random movement inside the inner/buffer zone
                         if (behavior.currentTarget == null || hasReachedTarget(fairyPos, behavior.currentTarget!!)) {
@@ -134,7 +134,7 @@ class FairyBehaviorSystem : System() {
                             behavior.state = FairyState.RANDOM_WAITING
                             
                             // 尝试播放静止时动画
-                            val idleAnim = AppModule.animationModule.playRandomIdleAnimation()
+                            val idleAnim = AppModule.animationController.playRandomIdleAnimation()
                             if (idleAnim != null) {
                                 behavior.isWaitingForAnimation = true
                                 behavior.waitTimer = idleAnim.durationMs / 1000f
@@ -164,7 +164,7 @@ class FairyBehaviorSystem : System() {
                         behavior.waitTimer = 0f
                         behavior.isWaitingForAnimation = false
                         behavior.currentTarget = getRandomTargetInInnerRadius(hmdPos, behavior.innerRadius, behavior.hoverHeight, behavior.zDeviationRange)
-                        AppModule.animationModule.playAnimation(FairyAnimation.TURBO_DASH)
+                        AppModule.animationController.playAnimation(FairyAnimation.TURBO_DASH)
                     }
                     
                     // Check if player moved too far during random waiting
@@ -173,7 +173,7 @@ class FairyBehaviorSystem : System() {
                         behavior.waitTimer = 0f
                         behavior.isWaitingForAnimation = false
                         behavior.currentTarget = getRandomTargetInInnerRadius(hmdPos, behavior.innerRadius, behavior.hoverHeight, behavior.zDeviationRange)
-                        AppModule.animationModule.playAnimation(FairyAnimation.TURBO_DASH)
+                        AppModule.animationController.playAnimation(FairyAnimation.TURBO_DASH)
                     }
                 }
                 
@@ -190,7 +190,7 @@ class FairyBehaviorSystem : System() {
                         behavior.baseY = transform.position.y
                         
                         // 跟随悬停也可以播放一个静止动画
-                        val idleAnim = AppModule.animationModule.playRandomIdleAnimation()
+                        val idleAnim = AppModule.animationController.playRandomIdleAnimation()
                         if (idleAnim != null) {
                             behavior.isWaitingForAnimation = true
                             behavior.waitTimer = idleAnim.durationMs / 1000f

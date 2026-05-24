@@ -1,5 +1,6 @@
 package com.example.matefairy01.di
 
+import com.example.matefairy01.animation.AnimationController
 import com.example.matefairy01.animation.AnimationModule
 import com.example.matefairy01.action.ActionRegistry
 import com.example.matefairy01.ai.ILLMProvider
@@ -19,6 +20,10 @@ object AppModule {
     // 独立的动画管理模块
     val animationModule by lazy {
         AnimationModule()
+    }
+
+    val animationController: AnimationController by lazy {
+        animationModule
     }
 
     // 单例注册表

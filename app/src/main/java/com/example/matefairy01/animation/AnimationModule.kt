@@ -6,7 +6,7 @@ import com.pico.spatial.core.ecs.resource.AnimationResource
 /**
  * 独立的动画管理模块，提供对外调度接口，与AI逻辑解耦
  */
-class AnimationModule {
+class AnimationModule : AnimationController {
     private var skinnedMeshEntity: Entity? = null
     private var animationResources: Array<AnimationResource>? = null
     
@@ -18,7 +18,7 @@ class AnimationModule {
     // 静止动画的冷却时间（毫秒），避免频繁执行显得多动症
     private val IDLE_ANIM_COOLDOWN_MS = 6000L 
 
-    fun initialize(robotEntity: Entity) {
+    override fun initialize(robotEntity: Entity) {
         val skinnedMeshEntities = robotEntity.findSkinnedMeshEntity().toList()
         if (skinnedMeshEntities.isNotEmpty()) {
             this.skinnedMeshEntity = skinnedMeshEntities.first()
@@ -29,7 +29,7 @@ class AnimationModule {
     /**
      * 对外提供的通用播放接口，AI模块也可调用
      */
-    fun playAnimation(animation: FairyAnimation) {
+    override fun playAnimation(animation: FairyAnimation) {
         val resources = animationResources ?: return
         val meshEntity = skinnedMeshEntity ?: return
         
@@ -48,7 +48,7 @@ class AnimationModule {
         currentPlayingAnim = null
     }
 
-    fun cleanup() {
+    override fun cleanup() {
         stopAllAnimations()
         animationResources?.forEach { it.close() }
         animationResources = null
@@ -66,7 +66,7 @@ class AnimationModule {
      * 随机播放一个静止时动画
      * @return 播放的动画，如果没有播放则返回 null
      */
-    fun playRandomIdleAnimation(): FairyAnimation? {
+    override fun playRandomIdleAnimation(): FairyAnimation? {
         if (!canPlayIdleAnimation()) return null
         
         // 可配置的概率，这里假设冷却满足就播放，或者也可以加个随机数
@@ -81,7 +81,7 @@ class AnimationModule {
     /**
      * 随机播放一个运动时动画（极速冲刺等可以在每次随机运动时播放）
      */
-    fun playRandomMovingAnimation(): FairyAnimation? {
+    override fun playRandomMovingAnimation(): FairyAnimation? {
         val anim = AnimationConfig.movingAnimations.random()
         playAnimation(anim)
         return anim
