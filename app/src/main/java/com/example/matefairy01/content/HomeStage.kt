@@ -48,12 +48,14 @@ import com.pico.spatial.ui.foundation.dsl.registerSystem
 import com.pico.spatial.ui.foundation.dsl.unregisterSystem
 import com.pico.spatial.ui.platform.meters
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import com.example.matefairy01.ui.GameUIContainer
 
 data class DialogueBubbleState(
@@ -348,9 +350,16 @@ fun HomeStage() {
             // 由于不能直接在 initial 闭包中构造包含 attachments 的 Entity
             // 且之前的直接获取机制会导致 null 的生命周期问题
             // 所以我们这里只加载基础包，完全依赖 update 闭包来实时扫描和挂载 Attachments
-            
-            val bundle =
-                withContext(kotlinx.coroutines.Dispatchers.IO) { AssetBundle.load("asset://editor-asset.bundle") }
+
+            val (bundle, glbRoot) = coroutineScope {
+                val bundleDeferred = async(Dispatchers.IO) {
+                    AssetBundle.load("asset://editor-asset.bundle")
+                }
+                val glbDeferred = async(Dispatchers.IO) {
+                    Entity.load("asset://pico_robot_animated.glb")
+                }
+                bundleDeferred.await() to glbDeferred.await()
+            }
             val model = Entity.loadSuspend(modelName = "MyScene", bundle = bundle)
 
             model.apply {
@@ -363,11 +372,6 @@ fun HomeStage() {
 
                 // 移除旧的静态/USDZ模型
                 findEntity("Toy_Robot_2_Anim")?.destroy()
-
-                // 加载新的包含动画序列的 GLB 模型
-                val glbRoot = withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    Entity.load("asset://pico_robot_animated.glb")
-                }
 
                 // 关键修复：GLB 根节点自带 scale=0.01，且骨骼动画在子节点上播放。
                 // 如果直接对根节点设置 scale=0.0045，会覆盖默认的 0.01，导致 SDK 的

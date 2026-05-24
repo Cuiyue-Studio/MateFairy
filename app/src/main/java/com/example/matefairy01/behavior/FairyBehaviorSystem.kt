@@ -3,6 +3,7 @@ package com.example.matefairy01.behavior
 import com.pico.spatial.core.ecs.System
 import com.pico.spatial.core.ecs.SceneUpdateContext
 import com.pico.spatial.core.ecs.EntityQueryCondition
+import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.ecs.TransformComponent
 import com.pico.spatial.core.math.Vector3
 import com.pico.spatial.core.math.EulerAngles
@@ -15,21 +16,23 @@ import kotlin.math.abs
 import kotlin.random.Random
 
 class FairyBehaviorSystem : System() {
+    private val hmdCondition = EntityQueryCondition.hasComponent(HMDTagComponent::class.java)
+    private val fairyCondition =
+        EntityQueryCondition.hasComponent(FairyBehaviorComponent::class.java)
+
+    private var cachedHmdEntity: Entity? = null
+    private var cachedFairyEntities: List<Entity> = emptyList()
+
     override fun update(context: SceneUpdateContext) {
         val dt = context.deltaTime
 
-        // Find HMD Entity
-        val hmdCondition = EntityQueryCondition.hasComponent(HMDTagComponent::class.java)
-        val hmdEntities = context.scene.queryEntity(hmdCondition)
-        if (hmdEntities.isEmpty()) return
-        val hmdEntity = hmdEntities.first()
+        val hmdEntity = resolveHmdEntity(context) ?: return
         // SDK 提供了 getGlobalPosition() 或者在 Scene 中可以根据层级计算，但 HMD 通常就是世界坐标
         val hmdTransform = hmdEntity.components[TransformComponent::class.java] ?: return
         val hmdPos = hmdTransform.position
 
-        // Find Fairy Entity
-        val fairyCondition = EntityQueryCondition.hasComponent(FairyBehaviorComponent::class.java)
-        val fairyEntities = context.scene.queryEntity(fairyCondition)
+        val fairyEntities = resolveFairyEntities(context)
+        if (fairyEntities.isEmpty()) return
         
         for (fairyEntity in fairyEntities) {
             val behavior = fairyEntity.components[FairyBehaviorComponent::class.java]!!
@@ -363,4 +366,33 @@ class FairyBehaviorSystem : System() {
     }
     
     private fun Float.toDegrees() = this * 180f / Math.PI.toFloat()
+
+    private fun resolveHmdEntity(context: SceneUpdateContext): Entity? {
+        val cached = cachedHmdEntity
+        if (cached != null &&
+            cached.components[HMDTagComponent::class.java] != null &&
+            cached.components[TransformComponent::class.java] != null
+        ) {
+            return cached
+        }
+
+        val resolved = context.scene.queryEntity(hmdCondition).firstOrNull()
+        cachedHmdEntity = resolved
+        return resolved
+    }
+
+    private fun resolveFairyEntities(context: SceneUpdateContext): List<Entity> {
+        if (cachedFairyEntities.isNotEmpty() && cachedFairyEntities.all(::isUsableFairyEntity)) {
+            return cachedFairyEntities
+        }
+
+        val resolved = context.scene.queryEntity(fairyCondition).filter(::isUsableFairyEntity)
+        cachedFairyEntities = resolved
+        return resolved
+    }
+
+    private fun isUsableFairyEntity(entity: Entity): Boolean {
+        return entity.components[FairyBehaviorComponent::class.java] != null &&
+            entity.components[TransformComponent::class.java] != null
+    }
 }

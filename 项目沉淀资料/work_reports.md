@@ -364,3 +364,34 @@
 ### 四、经验总结
 - 在当前工程架构下，`HMD` 高频 tracking 不是一个可以直接从 Compose 中抽离的“纯性能热点”，因为它同时承担了 `SpatialView.update` 的场景同步驱动职责。
 - 后续若要继续优化这一点，必须先把 `HMD` 实体同步、输入框跟随和附件挂载修复迁移到真正独立的帧级更新机制中，再移除 Compose 高频驱动。
+
+---
+
+## Phase 5.5 工作汇报：剩余 P0 性能优化落地（实体查询缓存 + 首屏加载并行化 + 打包优化）
+
+### 一、功能开发完成情况
+1. **优化 `FairyBehaviorSystem` 的每帧实体查询路径**：
+   - 修改文件：[FairyBehaviorSystem.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/behavior/FairyBehaviorSystem.kt)
+   - 将 `HMD` 条件和 `Fairy` 条件提升为系统级缓存，避免每帧重复创建 `EntityQueryCondition`。
+   - 引入 `cachedHmdEntity` 和 `cachedFairyEntities`，优先复用已解析实体；只有缓存为空或缓存实体不再具备所需组件时，才回退到 `queryEntity(...)` 重查。
+   - 保持精灵状态机、旋转逻辑、跟随/悬停语义不变，只优化实体定位成本。
+2. **优化首屏资源加载策略**：
+   - 修改文件：[HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt)
+   - 将 `AssetBundle.load("asset://editor-asset.bundle")` 与 `Entity.load("asset://pico_robot_animated.glb")` 改为在 `initial` 阶段并行加载。
+   - `MyScene` 仍然在 `bundle` 加载完成后按原顺序创建，GLB 也保持原来的模型接入、缩放修正、动画初始化和 Wrapper 结构，不改变显示结果与行为语义。
+3. **补充资源打包优化**：
+   - 修改文件：[app/build.gradle.kts](file:///Users/bytedance/MateFairy/app/build.gradle.kts)
+   - 增加 `androidResources.noCompress`，覆盖 `bundle`、`glb`、`usdz`、`wav`，减少资源压缩/解压对加载链路的额外开销。
+
+### 二、编译与测试情况
+- 执行 `./gradlew :app:compileDebugKotlin`，构建成功。
+- Kotlin daemon 仍因当前环境权限问题回退到非 daemon 编译，但不影响本次改动的有效性验证。
+
+### 三、技术债务与踩坑记录
+- **当前 `FairyBehaviorSystem` 采用的是保守缓存策略**：不依赖 SDK 内部的“实体有效性”私有接口，只用“组件是否仍存在”作为缓存可用性判断，避免因为误判导致精灵逻辑失效。
+- **首屏资源优化以并行化优先，不做激进延迟加载**：由于机器人模型与场景初始交互强相关，现阶段直接 lazy load 风险较高，因此先采取“并行加载但不改语义”的低风险优化方案。
+- **`noCompress` 是低风险收益项**：只影响打包和资源读取路径，不改变功能语义，适合作为 P0 的基础优化配置。
+
+### 四、后续开发建议
+- 下一步可以在真机上重点关注 `LoadAsset`、`LoadEntity_Asset`、`Spatial_App_Initialize` 和 `frameDrop` 计数变化，验证这轮优化是否带来可观收益。
+- 后续若继续做更深层的首屏优化，可以考虑把非关键场景元素拆成按需加载，但前提是先系统梳理哪些资源参与了初始交互链路。

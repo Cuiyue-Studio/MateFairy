@@ -600,3 +600,90 @@ val targetYaw = atan2(velocity.x, velocity.z).toDegrees() + 180f
 
 ### 5. 本阶段修改文件
 - [HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt)
+
+## Phase 5.5 技术交接文档：剩余 P0 性能优化
+
+### 1. 阶段概述
+本阶段继续推进其余 `P0` 优化项，但遵循“功能稳定优先”的原则，仅落地低风险、可验证的三项：
+1. 去掉 `FairyBehaviorSystem` 的每帧重复实体查询
+2. 并行化首屏 `bundle + GLB` 资源加载
+3. 给大资源文件补充 `noCompress` 打包配置
+
+本阶段刻意没有继续触碰 `HMD -> Compose -> SpatialView.update` 驱动链，避免再次引发跟随和输入框相关回归。
+
+### 2. 核心架构与类说明
+
+#### 2.1 `FairyBehaviorSystem` 增加实体缓存
+- 所在文件：[FairyBehaviorSystem.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/behavior/FairyBehaviorSystem.kt)
+- 新增字段：
+  - `hmdCondition`
+  - `fairyCondition`
+  - `cachedHmdEntity`
+  - `cachedFairyEntities`
+- 新增方法：
+  - `resolveHmdEntity(context)`
+  - `resolveFairyEntities(context)`
+  - `isUsableFairyEntity(entity)`
+
+#### 2.2 缓存策略说明
+当前缓存策略不是“永久缓存”，而是“缓存优先，失效回退重查”：
+1. 若缓存实体仍具备目标组件，则直接复用
+2. 若缓存为空，或缓存实体缺少关键组件，则重新 `queryEntity(...)`
+3. `FairyBehaviorSystem` 的状态机和运动学逻辑完全不变
+
+设计原因：
+- 当前仓库内没有 SDK `sources/`，无法安全依赖 `Entity.isValid()` 之类内部能力
+- 使用“组件仍存在”作为缓存可用性的保守判断，更适合本项目当前迭代阶段
+
+#### 2.3 `HomeStage` 首屏加载并行化
+- 所在文件：[HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt)
+- 原始顺序：
+  1. IO 线程加载 `editor-asset.bundle`
+  2. 基于 `bundle` 构建 `MyScene`
+  3. IO 线程加载 `pico_robot_animated.glb`
+- 新顺序：
+  1. 在 `coroutineScope` 中并行启动两个 `async(Dispatchers.IO)`：
+     - `AssetBundle.load("asset://editor-asset.bundle")`
+     - `Entity.load("asset://pico_robot_animated.glb")`
+  2. 等待两者完成
+  3. 按原逻辑构建 `MyScene`
+  4. 按原逻辑把 `glbRoot` 接到 `robotModel` Wrapper
+
+这样做的意义：
+- 缩短首屏阻塞链路中的串行等待时间
+- 不改变场景树结构、缩放修正逻辑、动画初始化入口和机器人行为组件挂载方式
+
+#### 2.4 `noCompress` 打包配置
+- 所在文件：[app/build.gradle.kts](file:///Users/bytedance/MateFairy/app/build.gradle.kts)
+- 新增：
+
+```kotlin
+androidResources {
+    noCompress += listOf("bundle", "glb", "usdz", "wav")
+}
+```
+
+设计目的：
+- 避免 `.bundle`、`.glb`、`.usdz`、`.wav` 在 APK 打包后再次压缩，减少安装后运行时解压和资源读取开销
+- 属于典型的低风险打包优化，不改变业务逻辑
+
+### 3. SDK/框架避坑指南
+1. **没有 SDK 源码时，不要假设实体有稳定的“有效性”判断 API**：
+   对 ECS 实体做缓存时，优先使用项目当前可见的组件存在性做保守判断。
+2. **首屏优化优先并行化，不要直接激进 lazy load**：
+   当前机器人模型不是装饰性资源，而是直接参与交互和动画逻辑。若未先完成完整依赖梳理，就直接延迟加载，风险很高。
+3. **`noCompress` 是值得优先补齐的资源打包项**：
+   它通常不会改变运行逻辑，但对资源型应用的冷启动和首次加载稳定性有帮助。
+
+### 4. 设计说明
+- 本阶段的优化取向是“缩短已知重路径、去掉明显重复开销”，而不是“重构架构”：
+  - 不改 `FairyBehaviorComponent` 状态字段
+  - 不改 `HomeStage` 的附件挂载策略
+  - 不改机器人模型缩放修正逻辑
+  - 不改 `AppModule.animationModule.initialize(glbRoot)` 的调用时机
+- 这样做的原因，是在前一阶段刚经历过 `SpatialView.update` 驱动误判回归后，后续 `P0` 优化必须尽量控制改动半径。
+
+### 5. 本阶段修改文件
+- [FairyBehaviorSystem.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/behavior/FairyBehaviorSystem.kt)
+- [HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt)
+- [app/build.gradle.kts](file:///Users/bytedance/MateFairy/app/build.gradle.kts)
