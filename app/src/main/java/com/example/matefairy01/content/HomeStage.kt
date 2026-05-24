@@ -1,5 +1,6 @@
 package com.example.matefairy01.content
 
+import android.content.pm.ApplicationInfo
 import android.os.Handler
 import android.os.Looper
 import androidx.compose.foundation.background
@@ -217,14 +218,19 @@ fun HomeStage() {
             controllerTrackingProvider.removeControllerActionListener(controllerListener)
             controllerTrackingProvider.stop()
             handTrackingProvider.stop()
+            AppModule.animationModule.cleanup()
             inputControllerManager.cleanup()
             handClapDetector.cleanup()
         }
     }
 
-    DisposableEffect(appConfig.ai.autoTest) {
+    val autoTestEnabled =
+        (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) &&
+            appConfig.ai.autoTest.enabled
+
+    DisposableEffect(autoTestEnabled, appConfig.ai.autoTest.intervalMs, appConfig.ai.autoTest.promptPool) {
         val job: Job? =
-            if (appConfig.ai.autoTest.enabled) {
+            if (autoTestEnabled && appConfig.ai.autoTest.promptPool.isNotEmpty()) {
                 scope.launch {
                     while (isActive) {
                         val prompt = appConfig.ai.autoTest.promptPool.randomOrNull()

@@ -687,3 +687,131 @@ androidResources {
 - [FairyBehaviorSystem.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/behavior/FairyBehaviorSystem.kt)
 - [HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt)
 - [app/build.gradle.kts](file:///Users/bytedance/MateFairy/app/build.gradle.kts)
+
+## Phase 5.6 技术交接文档：剩余 P1 性能优化
+
+### 1. 阶段概述
+本阶段继续处理剩余 `P1` 优化项，目标是减少主线程同步初始化、轮询协程、重复底层对象创建和不必要的后台摘要请求，同时不触碰精灵跟随、输入面板空间跟随和 `SpatialView.update` 驱动链。
+
+本阶段落地的优化包括：
+1. 应用启动阶段预热 `AppConfig`
+2. Stage 销毁时补齐 `AnimationModule.cleanup()`
+3. 将文本输入超时从轮询改为单次定时
+4. 复用 `SpeechRecognizer`
+5. 对 `ContextMemorySystem` 的摘要请求做串行批处理节流
+6. 将 `autoTest` 限制为可调试环境
+
+### 2. 核心架构与类说明
+
+#### 2.1 `SpatialApplication` 增加配置预热
+- 所在文件：[SpatialApplication.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/platform/SpatialApplication.kt)
+- 新增 `applicationScope`：
+
+```kotlin
+private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+```
+
+- 在 `onCreate()` 中后台预热：
+
+```kotlin
+applicationScope.launch {
+    AppConfigLoader.load(applicationContext)
+}
+```
+
+设计原因：
+- `AppConfigLoader` 本身已有缓存能力，因此最小改动方式就是在应用启动时提前把缓存填好
+- 这样能减少首次进入 `HomeStage` 时同步解析 `app_config.json` 的概率
+
+#### 2.2 `HomeStage` 增加动画资源清理与 AutoTest 发布保护
+- 所在文件：[HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt)
+- 在 Stage `onDispose` 中新增：
+
+```kotlin
+AppModule.animationModule.cleanup()
+```
+
+- `autoTest` 条件改为：
+  1. 应用 `FLAG_DEBUGGABLE` 为真
+  2. 配置文件中的 `appConfig.ai.autoTest.enabled` 为真
+  3. `promptPool` 非空
+
+设计原因：
+- 清理动画资源是典型的生命周期补全问题
+- `autoTest` 属于压测/开发辅助能力，不应该在发布构建中继续运行
+
+#### 2.3 `GameUIContainer` 去掉轮询式超时检测
+- 所在文件：[GameUIContainer.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/ui/GameUIContainer.kt)
+- 旧逻辑：
+  1. 打开输入框后进入 `while(true)`
+  2. 每秒 `delay(1000)`
+  3. 检查是否超时
+- 新逻辑：
+  1. 根据 `lastActiveTime` 计算剩余超时时间
+  2. 直接 `delay(remainingMs)`
+  3. 到点后再做一次超时校验并关闭
+
+设计结果：
+- 每次输入活跃时，`LaunchedEffect` 会因 `lastActiveTime` 更新而重启
+- 不再有每秒一次的固定轮询唤醒
+
+#### 2.4 `VoiceInputProvider` 复用 `SpeechRecognizer`
+- 所在文件：[VoiceInputProvider.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/input/VoiceInputProvider.kt)
+- 新增：
+  - `recognitionListener`
+  - `ensureSpeechRecognizer()`
+  - `cleanup()`
+
+新的生命周期分层：
+1. `startListening()`：
+   - 若已在录音，先 `stopListening()`
+   - 通过 `ensureSpeechRecognizer()` 复用或惰性创建实例
+2. `stopListening()`：
+   - 仅停止本次监听
+   - 不销毁底层 `SpeechRecognizer`
+3. `cleanup()`：
+   - `cancel()`
+   - `destroy()`
+   - 清理 listener、callback 和内部状态
+
+`InputControllerManager.cleanup()` 已同步改为调用 `voiceInputProvider.cleanup()`。
+
+#### 2.5 `ContextMemorySystem` 摘要压缩节流
+- 所在文件：[ContextMemorySystem.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/memory/ContextMemorySystem.kt)
+- 新增字段：
+  - `compressionLock`
+  - `pendingCompressionMessages`
+  - `compressionJobRunning`
+
+新逻辑：
+1. 滑窗溢出时，不再立即为每一批消息都独立发起摘要请求
+2. 先把待压缩消息累加到 `pendingCompressionMessages`
+3. 若当前没有压缩任务运行，则启动一个后台任务
+4. 后台任务循环提取累计批次，串行调用 `llmProvider.summarize(...)`
+5. 将结果并入 `longTermMemorySummary`
+
+这样可以避免连续对话时短时间内并发发起多次摘要请求。
+
+### 3. SDK/框架避坑指南
+1. **空间应用中的性能优化不只看渲染帧，也要看 Android 基础设施开销**：
+   `SpeechRecognizer`、配置读取、后台协程轮询、网络摘要请求，都会影响长期运行体验。
+2. **复用与释放要分层**：
+   可复用对象不要在每次短生命周期动作后都立刻销毁，但必须提供明确的最终释放路径。
+3. **开发辅助能力必须与发布环境隔离**：
+   `autoTest` 这类能力如果不做环境保护，很容易在正式包里演变为持续性性能和成本问题。
+
+### 4. 设计说明
+- 这批 `P1` 优化仍采用“低风险收敛”策略：
+  - 不改 AI 主请求链路
+  - 不改精灵行为系统
+  - 不改 Stage / Attachment 的空间同步机制
+  - 只减少明显的后台/轮询/重复初始化成本
+- `AppConfig` 本轮没有彻底改成 UI 侧异步状态加载，而是选择“应用级预热 + 现有缓存复用”，目的是在收益和改动半径之间取得平衡。
+
+### 5. 本阶段修改文件
+- [SpatialApplication.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/platform/SpatialApplication.kt)
+- [HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt)
+- [GameUIContainer.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/ui/GameUIContainer.kt)
+- [VoiceInputProvider.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/input/VoiceInputProvider.kt)
+- [InputControllerManager.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/input/InputControllerManager.kt)
+- [ContextMemorySystem.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/memory/ContextMemorySystem.kt)

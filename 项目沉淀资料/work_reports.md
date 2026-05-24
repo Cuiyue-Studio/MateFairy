@@ -395,3 +395,43 @@
 ### 四、后续开发建议
 - 下一步可以在真机上重点关注 `LoadAsset`、`LoadEntity_Asset`、`Spatial_App_Initialize` 和 `frameDrop` 计数变化，验证这轮优化是否带来可观收益。
 - 后续若继续做更深层的首屏优化，可以考虑把非关键场景元素拆成按需加载，但前提是先系统梳理哪些资源参与了初始交互链路。
+
+---
+
+## Phase 5.6 工作汇报：剩余 P1 性能优化落地（预热/清理/节流）
+
+### 一、功能开发完成情况
+1. **补充应用启动预热**：
+   - 修改文件：[SpatialApplication.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/platform/SpatialApplication.kt)
+   - 在应用启动阶段用后台协程预热 `AppConfigLoader.load(applicationContext)`，降低首次进入 `HomeStage` 时同步读取配置的主线程压力。
+2. **补齐动画资源释放**：
+   - 修改文件：[HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt)
+   - 在 Stage `onDispose` 中增加 `AppModule.animationModule.cleanup()`，避免 Stage 多次进入退出后动画资源残留。
+3. **优化输入面板超时逻辑**：
+   - 修改文件：[GameUIContainer.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/ui/GameUIContainer.kt)
+   - 将原先 `while(true) + delay(1000)` 的轮询式超时检测改成基于 `lastActiveTime` 的单次定时等待，避免每秒唤醒一次协程。
+4. **优化语音识别器生命周期**：
+   - 修改文件：[VoiceInputProvider.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/input/VoiceInputProvider.kt)
+   - 改为复用 `SpeechRecognizer` 实例与 `RecognitionListener`，`stopListening()` 只停止本次监听，不再每次都销毁实例。
+   - 新增 `cleanup()`，在 Stage 清理时统一释放底层语音识别资源。
+   - 修改文件：[InputControllerManager.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/input/InputControllerManager.kt)
+   - 清理路径改为调用 `voiceInputProvider.cleanup()`。
+5. **优化上下文摘要压缩触发方式**：
+   - 修改文件：[ContextMemorySystem.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/memory/ContextMemorySystem.kt)
+   - 将原先“每次滑窗溢出就立即发起一条摘要请求”的方式，改成“累计待压缩消息 + 串行批处理”的节流策略，避免短时间并发发起多次摘要网络请求。
+6. **限制 AutoTest 仅在可调试环境生效**：
+   - 修改文件：[HomeStage.kt](file:///Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt)
+   - `autoTest` 现在要求 `FLAG_DEBUGGABLE` 且配置启用，避免发布包误触发周期性 AI 请求。
+
+### 二、编译与测试情况
+- 执行 `./gradlew :app:compileDebugKotlin`，构建成功。
+- 本轮未继续触碰 `HMD -> Compose -> SpatialView.update` 的空间跟随链路，主要验证重点放在编译正确性和资源生命周期。
+
+### 三、技术债务与踩坑记录
+- **`SpeechRecognizer` 复用与释放要分开处理**：日常启停只需要 `stopListening()`，真正离开 Stage 或生命周期结束时才应调用 `destroy()`。
+- **配置预热要放在应用级别做后台化，而不是在 `HomeStage` 里继续同步搬运**：这样既能保留 `AppConfigLoader` 的缓存语义，也不会把复杂度扩散到 Stage 逻辑。
+- **摘要压缩的主要问题是请求风暴而不是单次耗时**：因此优先做串行合并，而不是先改模型或 Prompt。
+
+### 四、后续开发建议
+- 下一步建议在真机上观察长时间会话下的网络请求频率、内存曲线和动画资源计数，验证 `ContextMemorySystem` 与 `AnimationModule` 的收益。
+- 如果后续还要继续推进更深层 `P1/P2`，可以再评估 `AppConfig` 是否需要彻底异步化到 UI 侧，以及是否要为语音识别增加错误重试与能力检测。

@@ -20,6 +20,7 @@ class VoiceInputProvider(private val context: Context) : IUserInputProvider {
     private var speechRecognizer: SpeechRecognizer? = null
     private var isActive by mutableStateOf(false)
     private var resultCallback: ((String) -> Unit)? = null
+    private var recognitionListener: RecognitionListener? = null
 
     override val inputMode: InputMode = InputMode.VOICE
 
@@ -31,9 +32,41 @@ class VoiceInputProvider(private val context: Context) : IUserInputProvider {
         isActive = true
         resultCallback = onResult
 
-        // 初始化 SpeechRecognizer
-        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
-            setRecognitionListener(object : RecognitionListener {
+        val recognizer = ensureSpeechRecognizer()
+
+        // 配置识别意图
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+        }
+
+        recognizer.startListening(intent)
+        Log.d("VoiceInputProvider", "Started listening")
+    }
+
+    override fun stopListening() {
+        speechRecognizer?.stopListening()
+        isActive = false
+        Log.d("VoiceInputProvider", "Stopped listening")
+    }
+
+    override fun isListening(): Boolean = isActive
+
+    fun cleanup() {
+        speechRecognizer?.cancel()
+        speechRecognizer?.destroy()
+        speechRecognizer = null
+        recognitionListener = null
+        resultCallback = null
+        isActive = false
+    }
+
+    private fun ensureSpeechRecognizer(): SpeechRecognizer {
+        speechRecognizer?.let { return it }
+
+        val listener =
+            object : RecognitionListener {
                 override fun onReadyForSpeech(params: Bundle?) {
                     Log.d("VoiceInputProvider", "Ready for speech")
                 }
@@ -74,27 +107,12 @@ class VoiceInputProvider(private val context: Context) : IUserInputProvider {
                 }
 
                 override fun onEvent(eventType: Int, params: Bundle?) {}
-            })
+            }
+
+        recognitionListener = listener
+        return SpeechRecognizer.createSpeechRecognizer(context).apply {
+            setRecognitionListener(listener)
+            speechRecognizer = this
         }
-
-        // 配置识别意图
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-        }
-
-        speechRecognizer?.startListening(intent)
-        Log.d("VoiceInputProvider", "Started listening")
     }
-
-    override fun stopListening() {
-        speechRecognizer?.stopListening()
-        speechRecognizer?.destroy()
-        speechRecognizer = null
-        isActive = false
-        Log.d("VoiceInputProvider", "Stopped listening")
-    }
-
-    override fun isListening(): Boolean = isActive
 }
