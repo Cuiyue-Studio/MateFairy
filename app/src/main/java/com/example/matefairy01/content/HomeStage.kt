@@ -15,22 +15,22 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.example.matefairy01.ai.ChatMessage
+import com.example.matefairy01.ai.LLMProviderFactory
 import com.example.matefairy01.config.AppConfigLoader
 import com.example.matefairy01.behavior.FairyBehaviorComponent
-import com.example.matefairy01.behavior.BehaviorRuntimeDependencies
 import com.example.matefairy01.behavior.FairyBehaviorSystem
 import com.example.matefairy01.behavior.HMDTagComponent
+import com.example.matefairy01.di.AppModule
+import com.example.matefairy01.emotion.IEmotionRenderer
 import com.example.matefairy01.input.HandClapDetector
 import com.example.matefairy01.input.InputControllerManager
-import com.example.matefairy01.orchestrator.ConversationOrchestrator
-import com.example.matefairy01.runtime.MateFairyRuntimeFactory
 import com.example.matefairy01.ui.FairyDialogueUI
 import com.example.matefairy01.ui.SharedUIManager
 import com.pico.spatial.core.ecs.Entity
@@ -93,8 +93,6 @@ fun HomeStage() {
     val appConfig = remember(context) { AppConfigLoader.load(context) }
     val textInputProvider = SharedUIManager.textInputProvider
     val voiceInputProvider = SharedUIManager.voiceInputProvider
-    val appRuntime = remember(appConfig) { MateFairyRuntimeFactory.create(appConfig = appConfig) }
-    val conversationOrchestrator = appRuntime.conversationOrchestrator
     
     // AI 对话状态
     var dialogueText by remember { mutableStateOf("") }
@@ -108,30 +106,23 @@ fun HomeStage() {
         )
     }
 
-    val updateDialogueUi: (String) -> Unit = { text ->
-        dialogueText = text
-        dialogueBubbleState = dialogueBubbleState.copy(
-            text = text,
-            isVisible = true
-        )
-    }
-    val updateProcessingState: (Boolean) -> Unit = { processing ->
-        isProcessing = processing
-    }
-    val submitUserInputState = rememberUpdatedState<(CoroutineScope, String) -> Unit>(
-        { submitScope, text ->
-            handleUserInput(
-                text = text,
-                scope = submitScope,
-                orchestrator = conversationOrchestrator,
-                onDialogueUpdate = updateDialogueUi,
-                onProcessing = updateProcessingState
-            )
-        }
-    )
-
     // 监听全局状态，动态打开或关闭 UI 容器
     // 已经移除了对 navigator.openWindowContainer 的调用，回归原生 3D Compose UI 方案
+
+    // 初始化 AI 模块
+    DisposableEffect(appConfig) {
+        val provider = LLMProviderFactory.create(appConfig.ai)
+        val emotionRenderer = object : IEmotionRenderer {
+            override fun renderEmotion(emotion: String, fairyEntity: Entity) {
+                // 简单的情绪渲染：这里可以扩展为播放动画或改变材质
+            }
+        }
+        AppModule.initialize(
+            provider = provider,
+            renderer = emotionRenderer
+        )
+        onDispose { }
+    }
 
     // 输入控制器管理器（手柄模式）
     val inputControllerManager = remember {
@@ -139,10 +130,34 @@ fun HomeStage() {
             textInputProvider = textInputProvider,
             voiceInputProvider = voiceInputProvider,
             onTextInputResult = { text ->
-                submitUserInputState.value(scope, text)
+                handleUserInput(
+                    text,
+                    scope,
+                    fairyEntityProvider = { runtimeState.loadedRobotModelEntity },
+                    onDialogueUpdate = {
+                        dialogueText = it
+                        dialogueBubbleState = dialogueBubbleState.copy(
+                            text = it,
+                            isVisible = true
+                        )
+                    },
+                    onProcessing = { isProcessing = it }
+                )
             },
             onVoiceInputResult = { text ->
-                submitUserInputState.value(scope, text)
+                handleUserInput(
+                    text,
+                    scope,
+                    fairyEntityProvider = { runtimeState.loadedRobotModelEntity },
+                    onDialogueUpdate = {
+                        dialogueText = it
+                        dialogueBubbleState = dialogueBubbleState.copy(
+                            text = it,
+                            isVisible = true
+                        )
+                    },
+                    onProcessing = { isProcessing = it }
+                )
             }
         )
     }
@@ -152,7 +167,19 @@ fun HomeStage() {
         HandClapDetector {
             // 检测到3次拍手，开始语音输入
             voiceInputProvider.startListening { result ->
-                submitUserInputState.value(scope, result)
+                handleUserInput(
+                    result, 
+                    scope, 
+                    fairyEntityProvider = { runtimeState.loadedRobotModelEntity },
+                    onDialogueUpdate = { 
+                        dialogueText = it
+                        dialogueBubbleState = dialogueBubbleState.copy(
+                            text = it,
+                            isVisible = true
+                        )
+                    }, 
+                    onProcessing = { isProcessing = it }
+                )
             }
         }
     }
@@ -172,7 +199,6 @@ fun HomeStage() {
         inputControllerManager,
         handClapDetector
     ) {
-        BehaviorRuntimeDependencies.bindAvatarController(appRuntime.avatarController)
         hmdTrackingProvider.start()
         controllerTrackingProvider.addControllerActionListener(controllerListener)
         controllerTrackingProvider.start()
@@ -192,8 +218,7 @@ fun HomeStage() {
             controllerTrackingProvider.removeControllerActionListener(controllerListener)
             controllerTrackingProvider.stop()
             handTrackingProvider.stop()
-            appRuntime.avatarController.cleanup()
-            BehaviorRuntimeDependencies.clear()
+            AppModule.animationModule.cleanup()
             inputControllerManager.cleanup()
             handClapDetector.cleanup()
         }
@@ -210,7 +235,19 @@ fun HomeStage() {
                     while (isActive) {
                         val prompt = appConfig.ai.autoTest.promptPool.randomOrNull()
                         if (!prompt.isNullOrBlank()) {
-                            submitUserInputState.value(this, prompt)
+                            handleUserInput(
+                                text = prompt,
+                                scope = this,
+                                fairyEntityProvider = { runtimeState.loadedRobotModelEntity },
+                                onDialogueUpdate = {
+                                    dialogueText = it
+                                    dialogueBubbleState = dialogueBubbleState.copy(
+                                        text = it,
+                                        isVisible = true
+                                    )
+                                },
+                                onProcessing = { isProcessing = it }
+                            )
                         }
                         delay(appConfig.ai.autoTest.intervalMs.coerceAtLeast(1000L))
                     }
@@ -253,24 +290,48 @@ fun HomeStage() {
                     if (inputEntity.components[TransformComponent::class.java] == null) {
                         inputEntity.components[TransformComponent::class.java] = TransformComponent()
                     }
-                    hmdEntity.addChild(inputEntity)
+                    if (inputEntity.components[LookAtComponent::class.java] == null) {
+                        inputEntity.components[LookAtComponent::class.java] = LookAtComponent().apply {
+                            setViewerAsTarget()
+                            alignLocalUpToWorldUp = true
+                        }
+                    }
+                    content.addEntity(inputEntity)
                 }
 
-                val localOffset = Vector3(0f, -0.15f, -0.65f)
-                inputEntity.components[TransformComponent::class.java]?.apply {
-                    setPosition(localOffset)
-                    setQuaternion(Quat.identity())
-                }
+                // 计算头部前方 0.65m 的位置，并略微降低高度
+                val hmdPose = hmdTrackingData.hmdPose
+                
+                // 计算头部前方 0.65m 的位置，并略微降低高度
+                // PICO SDK 的 Quat.toEulerAngles() 返回的是 EulerAngles 对象
+                val euler = hmdPose.rotation.toEulerAngles()
+                
+                // 这里的 euler 是以度为单位（通常是这样），需要转换为弧度
+                val yawRad = Math.toRadians(euler.yaw.toDouble())
+                val pitchRad = Math.toRadians(euler.pitch.toDouble())
+                
+                // 简单的欧拉角转方向向量（Y-up, Z 轴负方向为前向）
+                val forwardX = -kotlin.math.sin(yawRad) * kotlin.math.cos(pitchRad)
+                val forwardY = kotlin.math.sin(pitchRad)
+                val forwardZ = -kotlin.math.cos(yawRad) * kotlin.math.cos(pitchRad)
+                
+                val distance = 0.65f
+                val targetPos = Vector3(
+                    hmdPose.position.x + (forwardX * distance).toFloat(),
+                    hmdPose.position.y + (forwardY * distance).toFloat() - 0.15f,
+                    hmdPose.position.z + (forwardZ * distance).toFloat()
+                )
+                
+                inputEntity.components[TransformComponent::class.java]?.setPosition(targetPos)
             }
 
             // 更新 HMD 位置 - 直接使用追踪数据的世界坐标
             hmdTrackingData.hmdPose.let { pose ->
                 val transformComponent = hmdEntity.components[TransformComponent::class.java]
                 transformComponent?.apply {
-                    val convertedPosition = rootEntity.convertPositionFrom(pose.position, null)
-                    val convertedRotation = rootEntity.convertRotationFrom(pose.rotation, null)
-                    setPosition(convertedPosition)
-                    setQuaternion(convertedRotation)
+                    // HMD 追踪数据已经是场景世界坐标，直接设置
+                    setPosition(pose.position)
+                    setQuaternion(pose.rotation)
                 }
             }
 
@@ -370,8 +431,8 @@ fun HomeStage() {
                 }
 
                 // 初始化动画模块（传入 GLB 根节点，以便查找 SkinnedMeshEntity）
-                appRuntime.avatarController.initialize(glbRoot)
-                appRuntime.avatarController.playSpawnAnimation()
+                AppModule.animationModule.initialize(glbRoot)
+                AppModule.animationModule.playAnimation(com.example.matefairy01.animation.FairyAnimation.TURBO_DASH)
                 
                 addChild(robotModel)
                 
@@ -386,7 +447,9 @@ fun HomeStage() {
             
             content.addEntity(rootEntity)
 
-            rootEntity.addChild(hmdEntity)
+            // HMD 实体直接添加到场景 content 中（不是任何实体的子节点）
+            // 这样 HMD 位置就是绝对世界坐标，与精灵模型在同一坐标系中
+            content.addEntity(hmdEntity)
         },
         attachments = {
             // AI 回复对话气泡面板 (关联到 text 附件)
@@ -420,7 +483,7 @@ fun HomeStage() {
 private fun handleUserInput(
     text: String,
     scope: CoroutineScope,
-    orchestrator: ConversationOrchestrator,
+    fairyEntityProvider: () -> Entity?,
     onDialogueUpdate: (String) -> Unit,
     onProcessing: (Boolean) -> Unit
 ) {
@@ -429,8 +492,25 @@ private fun handleUserInput(
         onDialogueUpdate("思考中...")
 
         try {
-            val result = orchestrator.processUserInput(text = text)
-            onDialogueUpdate(result.replyText)
+            // 添加用户消息到上下文
+            AppModule.contextMemorySystem.addMessage(ChatMessage(role = "user", content = text))
+
+            // 构建 Prompt 并请求 AI
+            val messages = AppModule.contextMemorySystem.buildPromptMessages()
+            val response = AppModule.llmProvider.chat(messages)
+
+            // 添加 AI 回复到上下文
+            AppModule.contextMemorySystem.addMessage(
+                ChatMessage(role = "assistant", content = response.reply_text)
+            )
+
+            // 更新对话显示
+            onDialogueUpdate(response.reply_text)
+
+            // 触发情绪和动作
+            AppModule.emotionEngine.triggerEmotion(response.emotion, fairyEntityProvider() ?: Entity())
+            AppModule.actionRegistry.dispatchAction(response.action_intent, fairyEntityProvider() ?: Entity())
+
         } catch (e: Exception) {
             onDialogueUpdate("抱歉，我遇到了一些问题，请稍后再试。")
         } finally {
