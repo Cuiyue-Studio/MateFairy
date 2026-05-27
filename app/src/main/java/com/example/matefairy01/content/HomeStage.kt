@@ -21,14 +21,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import com.example.matefairy01.config.AppConfigLoader
 import com.example.matefairy01.behavior.FairyBehaviorComponent
 import com.example.matefairy01.behavior.FairyBehaviorSystem
+import com.example.matefairy01.behavior.BehaviorRuntimeDependencies
 import com.example.matefairy01.behavior.HMDTagComponent
-import com.example.matefairy01.di.AppModule
+import com.example.matefairy01.config.AppConfigLoader
 import com.example.matefairy01.input.HandClapDetector
 import com.example.matefairy01.input.InputControllerManager
+import com.example.matefairy01.perception.SpatialMeshManager
+import com.example.matefairy01.runtime.MateFairyRuntime
+import com.example.matefairy01.runtime.MateFairyRuntimeFactory
 import com.example.matefairy01.ui.FairyDialogueUI
+import com.example.matefairy01.ui.GameUIContainer
 import com.example.matefairy01.ui.SharedUIManager
 import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.ecs.LookAtComponent
@@ -44,6 +48,8 @@ import com.pico.spatial.tracking.hmd.HMDTrackingProvider
 import com.pico.spatial.ui.foundation.content.SpatialView
 import com.pico.spatial.ui.foundation.dsl.registerSystem
 import com.pico.spatial.ui.foundation.dsl.unregisterSystem
+import com.pico.spatial.ui.design.Button
+import com.pico.spatial.ui.design.Text
 import com.pico.spatial.ui.platform.meters
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -54,7 +60,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import com.example.matefairy01.ui.GameUIContainer
 
 data class DialogueBubbleState(
     val text: String,
@@ -65,6 +70,7 @@ private class HomeStageRuntimeState {
     var loadedRobotModelEntity: Entity? = null
     var dialogueAttachmentEntity: Entity? = null
     var userInputAttachmentEntity: Entity? = null
+    var meshScanToggleAttachmentEntity: Entity? = null
 }
 
 const val DEFAULT_TEST_DIALOGUE_TEXT = "你好！我是你的MateFairy。"
@@ -74,6 +80,10 @@ fun HomeStage() {
     val scope = rememberCoroutineScope()
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val runtimeState = remember { HomeStageRuntimeState() }
+    val rootEntity = remember { Entity() }
+    val hmdEntity = remember { Entity().apply { components.set(HMDTagComponent()) } }
+    val spatialMeshManager = remember { SpatialMeshManager(mainHandler) }
+    var isMeshScanningEnabled by remember { mutableStateOf(false) }
 
     // 追踪数据提供者
     val hmdTrackingProvider = remember { HMDTrackingProvider() }
@@ -90,6 +100,7 @@ fun HomeStage() {
     val appConfig = remember(context) { AppConfigLoader.load(context) }
     val textInputProvider = SharedUIManager.textInputProvider
     val voiceInputProvider = SharedUIManager.voiceInputProvider
+    val runtime = remember(appConfig) { MateFairyRuntimeFactory.create(appConfig) }
     
     // AI 对话状态
     var dialogueText by remember { mutableStateOf("") }
@@ -103,13 +114,12 @@ fun HomeStage() {
         )
     }
 
-    // 监听全局状态，动态打开或关闭 UI 容器
-    // 已经移除了对 navigator.openWindowContainer 的调用，回归原生 3D Compose UI 方案
-
-    // 初始化全局依赖（LLM / MCP / 情绪 / 动作 / 对话编排器）
-    DisposableEffect(context) {
-        AppModule.initialize(context)
-        onDispose { }
+    DisposableEffect(runtime) {
+        BehaviorRuntimeDependencies.bindAvatarController(runtime.avatarController)
+        onDispose {
+            runtime.avatarController.cleanup()
+            BehaviorRuntimeDependencies.clear()
+        }
     }
 
     // 输入控制器管理器（手柄模式）
@@ -121,7 +131,7 @@ fun HomeStage() {
                 handleUserInput(
                     text,
                     scope,
-                    fairyEntityProvider = { runtimeState.loadedRobotModelEntity },
+                    runtime = runtime,
                     onDialogueUpdate = {
                         dialogueText = it
                         dialogueBubbleState = dialogueBubbleState.copy(
@@ -136,7 +146,7 @@ fun HomeStage() {
                 handleUserInput(
                     text,
                     scope,
-                    fairyEntityProvider = { runtimeState.loadedRobotModelEntity },
+                    runtime = runtime,
                     onDialogueUpdate = {
                         dialogueText = it
                         dialogueBubbleState = dialogueBubbleState.copy(
@@ -157,8 +167,8 @@ fun HomeStage() {
             voiceInputProvider.startListening { result ->
                 handleUserInput(
                     result, 
-                    scope, 
-                    fairyEntityProvider = { runtimeState.loadedRobotModelEntity },
+                    scope,
+                    runtime = runtime,
                     onDialogueUpdate = { 
                         dialogueText = it
                         dialogueBubbleState = dialogueBubbleState.copy(
@@ -185,7 +195,8 @@ fun HomeStage() {
         controllerTrackingProvider,
         handTrackingProvider,
         inputControllerManager,
-        handClapDetector
+        handClapDetector,
+        spatialMeshManager
     ) {
         hmdTrackingProvider.start()
         controllerTrackingProvider.addControllerActionListener(controllerListener)
@@ -206,9 +217,9 @@ fun HomeStage() {
             controllerTrackingProvider.removeControllerActionListener(controllerListener)
             controllerTrackingProvider.stop()
             handTrackingProvider.stop()
-            AppModule.animationModule.cleanup()
             inputControllerManager.cleanup()
             handClapDetector.cleanup()
+            spatialMeshManager.dispose()
         }
     }
 
@@ -226,7 +237,7 @@ fun HomeStage() {
                             handleUserInput(
                                 text = prompt,
                                 scope = this,
-                                fairyEntityProvider = { runtimeState.loadedRobotModelEntity },
+                                runtime = runtime,
                                 onDialogueUpdate = {
                                     dialogueText = it
                                     dialogueBubbleState = dialogueBubbleState.copy(
@@ -248,9 +259,6 @@ fun HomeStage() {
             job?.cancel()
         }
     }
-
-    val rootEntity = remember { Entity() }
-    val hmdEntity = remember { Entity().apply { components.set(HMDTagComponent()) } }
 
     SpatialView(
         modifier = Modifier.requiredSize(10.meters),
@@ -311,6 +319,38 @@ fun HomeStage() {
                 )
                 
                 inputEntity.components[TransformComponent::class.java]?.setPosition(targetPos)
+            }
+
+            attachments.entity("mesh_scan_toggle")?.let { toggleEntity ->
+                if (runtimeState.meshScanToggleAttachmentEntity != toggleEntity) {
+                    runtimeState.meshScanToggleAttachmentEntity = toggleEntity
+                    if (toggleEntity.components[TransformComponent::class.java] == null) {
+                        toggleEntity.components[TransformComponent::class.java] = TransformComponent()
+                    }
+                    if (toggleEntity.components[LookAtComponent::class.java] == null) {
+                        toggleEntity.components[LookAtComponent::class.java] = LookAtComponent().apply {
+                            setViewerAsTarget()
+                            alignLocalUpToWorldUp = true
+                        }
+                    }
+                    content.addEntity(toggleEntity)
+                }
+
+                val hmdPose = hmdTrackingData.hmdPose
+                val euler = hmdPose.rotation.toEulerAngles()
+                val yawRad = Math.toRadians(euler.yaw.toDouble())
+                val pitchRad = Math.toRadians(euler.pitch.toDouble())
+                val forwardX = -kotlin.math.sin(yawRad) * kotlin.math.cos(pitchRad)
+                val forwardY = kotlin.math.sin(pitchRad)
+                val forwardZ = -kotlin.math.cos(yawRad) * kotlin.math.cos(pitchRad)
+                val distance = 0.95f
+                val targetPos = Vector3(
+                    hmdPose.position.x + (forwardX * distance).toFloat(),
+                    hmdPose.position.y + (forwardY * distance).toFloat() - 0.35f,
+                    hmdPose.position.z + (forwardZ * distance).toFloat()
+                )
+
+                toggleEntity.components[TransformComponent::class.java]?.setPosition(targetPos)
             }
 
             // 更新 HMD 位置 - 直接使用追踪数据的世界坐标
@@ -419,8 +459,8 @@ fun HomeStage() {
                 }
 
                 // 初始化动画模块（传入 GLB 根节点，以便查找 SkinnedMeshEntity）
-                AppModule.animationModule.initialize(glbRoot)
-                AppModule.animationModule.playAnimation(com.example.matefairy01.animation.FairyAnimation.TURBO_DASH)
+                runtime.avatarController.initialize(glbRoot)
+                runtime.avatarController.playSpawnAnimation()
                 
                 addChild(robotModel)
                 
@@ -461,6 +501,29 @@ fun HomeStage() {
                     GameUIContainer()
                 }
             }
+
+            AttachmentPanel(id = "mesh_scan_toggle") {
+                Box(
+                    modifier = Modifier
+                        .size(360.dp, 120.dp)
+                        .background(Color.Transparent),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Button(
+                        onClick = {
+                            val nextEnabled = !isMeshScanningEnabled
+                            isMeshScanningEnabled = nextEnabled
+                            if (nextEnabled) {
+                                spatialMeshManager.start(rootEntity)
+                            } else {
+                                spatialMeshManager.stop(clearMeshes = true)
+                            }
+                        }
+                    ) {
+                        Text(if (isMeshScanningEnabled) "关闭空间扫描" else "开启空间扫描")
+                    }
+                }
+            }
         }
     )
 }
@@ -471,7 +534,7 @@ fun HomeStage() {
 private fun handleUserInput(
     text: String,
     scope: CoroutineScope,
-    fairyEntityProvider: () -> Entity?,
+    runtime: MateFairyRuntime,
     onDialogueUpdate: (String) -> Unit,
     onProcessing: (Boolean) -> Unit
 ) {
@@ -480,10 +543,9 @@ private fun handleUserInput(
         onDialogueUpdate("思考中...")
 
         try {
-            // 全部经由 ConversationOrchestrator 闭环：
-            //   上下文记忆 → LLM（含 MCP 工具调用） → 情绪/动作 → 回复
-            val result = AppModule.conversationOrchestrator.processUserInput(text)
+            val result = runtime.conversationOrchestrator.processUserInput(text)
             onDialogueUpdate(result.replyText)
+
         } catch (e: Exception) {
             onDialogueUpdate("抱歉，我遇到了一些问题，请稍后再试。")
         } finally {

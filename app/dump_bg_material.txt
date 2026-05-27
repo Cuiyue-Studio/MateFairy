@@ -1,0 +1,2 @@
+MaterialModifierKt error: java.lang.ClassNotFoundException: com.pico.spatial.ui.foundation.design.MaterialModifierKt
+Material error: java.lang.ClassNotFoundException: com.pico.spatial.ecs.resources.Material

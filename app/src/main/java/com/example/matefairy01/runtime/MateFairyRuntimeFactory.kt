@@ -1,12 +1,14 @@
 package com.example.matefairy01.runtime
 
 import com.example.matefairy01.action.ActionRegistry
+import com.example.matefairy01.action.handlers.GenericAnimationHandler
 import com.example.matefairy01.ai.LLMProviderFactory
+import com.example.matefairy01.animation.AnimationConfig
 import com.example.matefairy01.animation.AnimationModule
 import com.example.matefairy01.avatar.DefaultAvatarController
 import com.example.matefairy01.config.AppConfig
+import com.example.matefairy01.emotion.AvatarEmotionRenderer
 import com.example.matefairy01.emotion.EmotionEngine
-import com.example.matefairy01.emotion.NoOpEmotionRenderer
 import com.example.matefairy01.mcp.McpManager
 import com.example.matefairy01.memory.ContextMemorySystem
 import com.example.matefairy01.orchestrator.ConversationOrchestrator
@@ -20,12 +22,21 @@ object MateFairyRuntimeFactory {
     fun create(appConfig: AppConfig): MateFairyRuntime {
         val mcpManager = McpManager(appConfig.mcpServers)
         val llmProvider = LLMProviderFactory.create(appConfig.ai, mcpManager)
-        val emotionRenderer = NoOpEmotionRenderer()
-        val emotionEngine = EmotionEngine(emotionRenderer)
-        val actionRegistry = ActionRegistry()
         val contextMemorySystem = ContextMemorySystem(llmProvider)
         val animationModule = AnimationModule()
         val avatarController = DefaultAvatarController(animationModule)
+
+        val emotionRenderer = AvatarEmotionRenderer(animationModule)
+        val emotionEngine = EmotionEngine(emotionRenderer)
+
+        val actionRegistry = ActionRegistry().apply {
+            // 自动注册所有非任务型动画的通用 Handler
+            AnimationConfig.supportedActions.filter { it != "none" }.forEach { intent ->
+                register(GenericAnimationHandler(intent, animationModule))
+            }
+            // 以后复杂的任务型 Handler 也可以继续在这里注册
+            // register(FetchBallHandler(...))
+        }
 
         val conversationOrchestrator = ConversationOrchestrator(
             llmProvider = llmProvider,
