@@ -1,6 +1,7 @@
 package com.example.matefairy01.runtime
 
 import com.example.matefairy01.action.ActionRegistry
+import com.example.matefairy01.action.handlers.MadActionHandler
 import com.example.matefairy01.ai.LLMProviderFactory
 import com.example.matefairy01.animation.AnimationModule
 import com.example.matefairy01.avatar.DefaultAvatarController
@@ -20,10 +21,13 @@ object MateFairyRuntimeFactory {
         val llmProvider = LLMProviderFactory.create(appConfig.ai)
         val emotionRenderer = NoOpEmotionRenderer()
         val emotionEngine = EmotionEngine(emotionRenderer)
-        val actionRegistry = ActionRegistry()
         val contextMemorySystem = ContextMemorySystem(llmProvider)
         val animationController = AnimationModule()
         val avatarController = DefaultAvatarController(animationController)
+
+        val actionRegistry = ActionRegistry().apply {
+            register(MadActionHandler(animationController))
+        }
 
         val conversationOrchestrator = ConversationOrchestrator(
             llmProvider = llmProvider,

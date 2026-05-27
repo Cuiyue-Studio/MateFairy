@@ -25,7 +25,10 @@ enum class FairyAnimation(
     SPIN_LEAP(1, "Spin Leap", AnimationType.MOVING, 2000L),
     CURIOUS_LOOK(2, "Curious Look", AnimationType.IDLE, 2500L),
     TURBO_DASH(3, "Turbo Dash", AnimationType.MOVING, 1500L),
-    HELLO_WAVE(4, "Hello Wave", AnimationType.IDLE, 2000L)
+    HELLO_WAVE(4, "Hello Wave", AnimationType.IDLE, 2000L),
+    
+    // 新增的发狂动画，假设动画师按照建议改名后排在第 6 位（索引为 5）
+    MAD_ACTION(5, "Mad Action", AnimationType.MOVING, 3000L)
 }
 
 object AnimationConfig {
