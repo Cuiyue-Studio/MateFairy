@@ -1,6 +1,8 @@
 package com.example.matefairy01.ai
 
+import android.util.Log
 import com.example.matefairy01.config.DeepSeekConfig
+import com.example.matefairy01.mcp.McpManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -14,15 +16,22 @@ import java.util.concurrent.TimeUnit
 
 class DeepSeekLLMProvider(
     private val config: DeepSeekConfig,
-    initialSystemPrompt: String
+    initialSystemPrompt: String,
+    /** 可选 MCP 工具管理器。若非空且有可用工具，自动进入 function calling 流程 */
+    private val mcpManager: McpManager? = null
 ) : ILLMProvider {
+    companion object {
+        private const val TAG = "DeepSeekLLM"
+        private const val MAX_TOOL_ITERATIONS = 6
+        private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+    }
+
     private data class ValidationResult(
         val response: AIResponse?,
         val errorReason: String? = null
     )
 
     override var systemPrompt: String = initialSystemPrompt
-
 
     private val httpClient =
         OkHttpClient.Builder()
@@ -34,20 +43,18 @@ class DeepSeekLLMProvider(
     override suspend fun chat(messages: List<ChatMessage>): AIResponse = withContext(Dispatchers.IO) {
         validateConfig()
 
-        val payload = JSONObject().apply {
-            put("model", config.model)
-            put("messages", buildChatMessagesJson(messages, structured = true))
-            put("max_tokens", config.maxTokens)
-            put("temperature", minOf(config.temperature, 0.3))
-            put("stream", false)
-            put("response_format", JSONObject().put("type", "json_object"))
+        // 工具模式：先确保 MCP 已连接，再判断是否有可用工具
+        val manager = mcpManager
+        if (manager != null && manager.hasAnyServer) {
+            runCatching { manager.ensureInitialized() }
+                .onFailure { Log.w(TAG, "MCP init failed, fallback to non-tool mode: ${it.message}") }
+            if (manager.hasAvailableTools()) {
+                return@withContext chatWithTools(messages, manager)
+            }
         }
 
-        val rawContent = executeRequest(payload)
-        parseChatResponse(rawContent) ?: run {
-            val repaired = repairStructuredOutput(rawContent)
-            parseChatResponse(repaired) ?: buildProtocolFallback()
-        }
+        // 无工具：走原有结构化 JSON 路径
+        chatStructured(messages)
     }
 
     override suspend fun summarize(messages: List<ChatMessage>): String = withContext(Dispatchers.IO) {
@@ -70,8 +77,162 @@ class DeepSeekLLMProvider(
             put("stream", false)
         }
 
-        executeRequest(payload).ifBlank { "暂无摘要。" }
+        executeRequestContent(payload).ifBlank { "暂无摘要。" }
     }
+
+    // ---------------- 无工具：原结构化路径 ----------------
+
+    private fun chatStructured(messages: List<ChatMessage>): AIResponse {
+        val payload = JSONObject().apply {
+            put("model", config.model)
+            put("messages", buildChatMessagesJson(messages, structured = true))
+            put("max_tokens", config.maxTokens)
+            put("temperature", minOf(config.temperature, 0.3))
+            put("stream", false)
+            put("response_format", JSONObject().put("type", "json_object"))
+        }
+
+        val rawContent = executeRequestContent(payload)
+        return parseChatResponse(rawContent) ?: run {
+            val repaired = repairStructuredOutput(rawContent)
+            parseChatResponse(repaired) ?: buildProtocolFallback()
+        }
+    }
+
+    // ---------------- 工具模式：function calling 循环 ----------------
+
+    private suspend fun chatWithTools(
+        messages: List<ChatMessage>,
+        manager: McpManager
+    ): AIResponse {
+        val workingMessages = buildToolModeMessagesJson(messages)
+        val toolsJson = manager.buildToolsJsonForOpenAI()
+
+        repeat(MAX_TOOL_ITERATIONS) { iteration ->
+            val payload = JSONObject().apply {
+                put("model", config.model)
+                put("messages", workingMessages)
+                put("tools", toolsJson)
+                put("tool_choice", "auto")
+                put("max_tokens", config.maxTokens)
+                put("temperature", config.temperature)
+                put("stream", false)
+            }
+
+            val root = executeRequestRoot(payload)
+            val choice = root.optJSONArray("choices")?.optJSONObject(0)
+                ?: return buildProtocolFallback()
+            val assistantMsg = choice.optJSONObject("message") ?: return buildProtocolFallback()
+            val toolCalls = assistantMsg.optJSONArray("tool_calls")
+
+            if (toolCalls == null || toolCalls.length() == 0) {
+                // 没有工具调用，这是最终回复
+                val content = assistantMsg.optString("content").trim()
+                return parseToolModeFinalResponse(content)
+            }
+
+            // 把 assistant(tool_calls) 消息原样回灌
+            workingMessages.put(assistantMsg)
+
+            // 依次执行每个工具调用并把结果作为 role=tool 消息回灌
+            for (i in 0 until toolCalls.length()) {
+                val tc = toolCalls.optJSONObject(i) ?: continue
+                val tcId = tc.optString("id")
+                val fn = tc.optJSONObject("function")
+                val fnName = fn?.optString("name").orEmpty()
+                val argsRaw = fn?.optString("arguments", "{}").orEmpty()
+
+                val argsJson = try {
+                    JSONObject(argsRaw.ifBlank { "{}" })
+                } catch (e: Exception) {
+                    JSONObject()
+                }
+
+                val toolResult = manager.callTool(fnName, argsJson)
+                Log.d(TAG, "tool '$fnName' returned: ${toolResult.take(200)}")
+
+                workingMessages.put(
+                    JSONObject().apply {
+                        put("role", "tool")
+                        put("tool_call_id", tcId)
+                        put("content", toolResult)
+                    }
+                )
+            }
+            // 继续下一轮，让模型基于工具结果继续推理
+        }
+
+        Log.w(TAG, "tool iterations exceeded $MAX_TOOL_ITERATIONS, falling back")
+        return buildProtocolFallback()
+    }
+
+    /**
+     * 工具模式最终回复解析：优先尝试结构化 JSON（保留 emotion/action_intent），
+     * 失败则降级为纯文本，emotion/action 取默认值
+     */
+    private fun parseToolModeFinalResponse(content: String): AIResponse {
+        if (content.isBlank()) return buildProtocolFallback()
+        val parsed = parseChatResponse(content)
+        if (parsed != null) return parsed
+        return AIResponse(
+            status = "ok",
+            reply_text = content.take(120),
+            emotion = "neutral",
+            action_intent = "none"
+        )
+    }
+
+    private fun buildToolModeMessagesJson(messages: List<ChatMessage>): JSONArray {
+        val safeMessages =
+            if (messages.isEmpty()) {
+                listOf(ChatMessage(role = "system", content = systemPrompt))
+            } else {
+                messages
+            }
+
+        return JSONArray().apply {
+            safeMessages.forEachIndexed { index, message ->
+                val content =
+                    if (index == 0 && message.role == "system") {
+                        buildToolEnabledSystemPrompt(message.content)
+                    } else {
+                        message.content
+                    }
+                put(
+                    JSONObject().apply {
+                        put("role", message.role)
+                        put("content", content)
+                    }
+                )
+            }
+        }
+    }
+
+    private fun buildToolEnabledSystemPrompt(basePrompt: String): String {
+        return """
+            $basePrompt
+
+            【工具使用】
+            你可以使用外部工具来获取信息或执行操作。需要时直接发起 tool_calls，
+            不需要事先询问用户。工具结果会以 role=tool 的消息返回给你。
+
+            【最终回复格式】
+            当你不再需要调用工具、准备好回答用户时，请用以下 JSON 格式输出最终回复：
+            {
+              "status": "ok",
+              "reply_text": "显示给用户的中文文本，1-2 句，长度 1-80 个汉字",
+              "emotion": "neutral|happy|sad|angry|shy|surprised|thinking",
+              "action_intent": "none|wave|nod|shake_head|think"
+            }
+
+            注意：
+            1. 仅在最终回复时输出 JSON，工具调用过程中无需输出文本。
+            2. 不要把 JSON 包在 markdown 代码块里。
+            3. 如果无法 JSON 化，也至少输出一段中文回复。
+        """.trimIndent()
+    }
+
+    // ---------------- 公共消息构造 / HTTP ----------------
 
     private fun buildChatMessagesJson(
         messages: List<ChatMessage>,
@@ -158,7 +319,19 @@ class DeepSeekLLMProvider(
         """.trimIndent()
     }
 
-    private fun executeRequest(payload: JSONObject): String {
+    /**
+     * 发起一次 HTTP 请求，返回 message.content 字符串
+     */
+    private fun executeRequestContent(payload: JSONObject): String {
+        val root = executeRequestRoot(payload)
+        val message = root.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")
+        return message?.optString("content").orEmpty().trim()
+    }
+
+    /**
+     * 发起一次 HTTP 请求，返回完整 root JSON（用于工具调用流程取 tool_calls）
+     */
+    private fun executeRequestRoot(payload: JSONObject): JSONObject {
         val request =
             Request.Builder()
                 .url(config.baseUrl)
@@ -172,13 +345,11 @@ class DeepSeekLLMProvider(
             if (!response.isSuccessful) {
                 throw IOException("DeepSeek 请求失败: HTTP ${response.code} ${response.message} ${bodyText.take(300)}")
             }
-
-            val root = JSONObject(bodyText)
-            val choices = root.optJSONArray("choices")
-            val firstMessage = choices?.optJSONObject(0)?.optJSONObject("message")
-            return firstMessage?.optString("content").orEmpty().trim()
+            return JSONObject(bodyText)
         }
     }
+
+    // ---------------- 响应解析 / 修复 ----------------
 
     private fun parseChatResponse(rawContent: String): AIResponse? {
         val normalized = normalizeRawContent(rawContent)
@@ -285,7 +456,7 @@ class DeepSeekLLMProvider(
             put("stream", false)
             put("response_format", JSONObject().put("type", "json_object"))
         }
-        return executeRequest(payload)
+        return executeRequestContent(payload)
     }
 
     private fun normalizeEmotion(raw: String): String {
@@ -317,9 +488,5 @@ class DeepSeekLLMProvider(
         require(config.apiKey.isNotBlank() && !config.apiKey.contains("PLEASE_REPLACE")) {
             "DeepSeek API Key 未配置，请先在 app_config.json 中填写 apiKey"
         }
-    }
-
-    companion object {
-        private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 }

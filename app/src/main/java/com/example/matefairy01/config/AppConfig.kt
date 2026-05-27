@@ -1,11 +1,14 @@
 package com.example.matefairy01.config
 
 import android.content.Context
+import com.example.matefairy01.mcp.McpServerConfig
+import com.example.matefairy01.mcp.McpTransportType
 import org.json.JSONArray
 import org.json.JSONObject
 
 data class AppConfig(
-    val ai: AIConfig = AIConfig()
+    val ai: AIConfig = AIConfig(),
+    val mcpServers: List<McpServerConfig> = emptyList()
 )
 
 data class AIConfig(
@@ -62,10 +65,51 @@ object AppConfigLoader {
 
             val raw = context.assets.open(CONFIG_ASSET_PATH).bufferedReader().use { it.readText() }
             val root = JSONObject(raw)
-            val config = AppConfig(ai = parseAIConfig(root.optJSONObject("ai")))
+            val config = AppConfig(
+                ai = parseAIConfig(root.optJSONObject("ai")),
+                mcpServers = parseMcpServers(root.optJSONObject("mcpServers"))
+            )
             cachedConfig = config
             return config
         }
+    }
+
+    private fun parseMcpServers(json: JSONObject?): List<McpServerConfig> {
+        if (json == null) return emptyList()
+        val result = mutableListOf<McpServerConfig>()
+        val names = json.keys()
+        while (names.hasNext()) {
+            val name = names.next()
+            val item = json.optJSONObject(name) ?: continue
+            val url = item.optString("url").trim()
+            if (url.isEmpty()) continue
+
+            val toolsArr = item.optJSONArray("enabledTools")
+            val enabledTools = if (toolsArr == null) listOf("*") else toolsArr.toStringList()
+
+            result += McpServerConfig(
+                name = name,
+                type = McpTransportType.fromRaw(item.optString("type")),
+                url = url,
+                headers = parseStringMap(item.optJSONObject("headers")),
+                connectTimeoutMs = item.optLong("connectTimeoutMs", 10_000L),
+                readTimeoutMs = item.optLong("readTimeoutMs", 60_000L),
+                toolTimeoutMs = item.optLong("toolTimeoutMs", 30_000L),
+                enabledTools = enabledTools
+            )
+        }
+        return result
+    }
+
+    private fun parseStringMap(json: JSONObject?): Map<String, String> {
+        if (json == null) return emptyMap()
+        val map = mutableMapOf<String, String>()
+        val keys = json.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            map[key] = json.optString(key)
+        }
+        return map
     }
 
     private fun parseAIConfig(json: JSONObject?): AIConfig {

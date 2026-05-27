@@ -9,6 +9,7 @@ import com.example.matefairy01.avatar.DefaultAvatarController
 import com.example.matefairy01.config.AppConfig
 import com.example.matefairy01.emotion.AvatarEmotionRenderer
 import com.example.matefairy01.emotion.EmotionEngine
+import com.example.matefairy01.mcp.McpManager
 import com.example.matefairy01.memory.ContextMemorySystem
 import com.example.matefairy01.orchestrator.ConversationOrchestrator
 import com.example.matefairy01.orchestrator.adapters.ActionRegistryPortAdapter
@@ -19,18 +20,19 @@ import com.example.matefairy01.orchestrator.adapters.EmotionEnginePortAdapter
  */
 object MateFairyRuntimeFactory {
     fun create(appConfig: AppConfig): MateFairyRuntime {
-        val llmProvider = LLMProviderFactory.create(appConfig.ai)
+        val mcpManager = McpManager(appConfig.mcpServers)
+        val llmProvider = LLMProviderFactory.create(appConfig.ai, mcpManager)
         val contextMemorySystem = ContextMemorySystem(llmProvider)
-        val animationController = AnimationModule()
-        val avatarController = DefaultAvatarController(animationController)
+        val animationModule = AnimationModule()
+        val avatarController = DefaultAvatarController(animationModule)
 
-        val emotionRenderer = AvatarEmotionRenderer(animationController)
+        val emotionRenderer = AvatarEmotionRenderer(animationModule)
         val emotionEngine = EmotionEngine(emotionRenderer)
 
         val actionRegistry = ActionRegistry().apply {
             // 自动注册所有非任务型动画的通用 Handler
             AnimationConfig.supportedActions.filter { it != "none" }.forEach { intent ->
-                register(GenericAnimationHandler(intent, animationController))
+                register(GenericAnimationHandler(intent, animationModule))
             }
             // 以后复杂的任务型 Handler 也可以继续在这里注册
             // register(FetchBallHandler(...))
@@ -45,7 +47,9 @@ object MateFairyRuntimeFactory {
 
         return MateFairyRuntime(
             conversationOrchestrator = conversationOrchestrator,
-            avatarController = avatarController
+            avatarController = avatarController,
+            animationModule = animationModule,
+            mcpManager = mcpManager
         )
     }
 }
