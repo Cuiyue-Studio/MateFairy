@@ -7,6 +7,7 @@ import com.example.matefairy01.avatar.DefaultAvatarController
 import com.example.matefairy01.config.AppConfig
 import com.example.matefairy01.emotion.EmotionEngine
 import com.example.matefairy01.emotion.NoOpEmotionRenderer
+import com.example.matefairy01.mcp.McpManager
 import com.example.matefairy01.memory.ContextMemorySystem
 import com.example.matefairy01.orchestrator.ConversationOrchestrator
 import com.example.matefairy01.orchestrator.adapters.ActionRegistryPortAdapter
@@ -17,13 +18,14 @@ import com.example.matefairy01.orchestrator.adapters.EmotionEnginePortAdapter
  */
 object MateFairyRuntimeFactory {
     fun create(appConfig: AppConfig): MateFairyRuntime {
-        val llmProvider = LLMProviderFactory.create(appConfig.ai)
+        val mcpManager = McpManager(appConfig.mcpServers)
+        val llmProvider = LLMProviderFactory.create(appConfig.ai, mcpManager)
         val emotionRenderer = NoOpEmotionRenderer()
         val emotionEngine = EmotionEngine(emotionRenderer)
         val actionRegistry = ActionRegistry()
         val contextMemorySystem = ContextMemorySystem(llmProvider)
-        val animationController = AnimationModule()
-        val avatarController = DefaultAvatarController(animationController)
+        val animationModule = AnimationModule()
+        val avatarController = DefaultAvatarController(animationModule)
 
         val conversationOrchestrator = ConversationOrchestrator(
             llmProvider = llmProvider,
@@ -34,7 +36,9 @@ object MateFairyRuntimeFactory {
 
         return MateFairyRuntime(
             conversationOrchestrator = conversationOrchestrator,
-            avatarController = avatarController
+            avatarController = avatarController,
+            animationModule = animationModule,
+            mcpManager = mcpManager
         )
     }
 }

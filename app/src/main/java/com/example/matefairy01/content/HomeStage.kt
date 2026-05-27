@@ -21,14 +21,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import com.example.matefairy01.ai.ChatMessage
-import com.example.matefairy01.ai.LLMProviderFactory
 import com.example.matefairy01.config.AppConfigLoader
 import com.example.matefairy01.behavior.FairyBehaviorComponent
 import com.example.matefairy01.behavior.FairyBehaviorSystem
 import com.example.matefairy01.behavior.HMDTagComponent
 import com.example.matefairy01.di.AppModule
-import com.example.matefairy01.emotion.IEmotionRenderer
 import com.example.matefairy01.input.HandClapDetector
 import com.example.matefairy01.input.InputControllerManager
 import com.example.matefairy01.ui.FairyDialogueUI
@@ -109,18 +106,9 @@ fun HomeStage() {
     // 监听全局状态，动态打开或关闭 UI 容器
     // 已经移除了对 navigator.openWindowContainer 的调用，回归原生 3D Compose UI 方案
 
-    // 初始化 AI 模块
-    DisposableEffect(appConfig) {
-        val provider = LLMProviderFactory.create(appConfig.ai)
-        val emotionRenderer = object : IEmotionRenderer {
-            override fun renderEmotion(emotion: String, fairyEntity: Entity) {
-                // 简单的情绪渲染：这里可以扩展为播放动画或改变材质
-            }
-        }
-        AppModule.initialize(
-            provider = provider,
-            renderer = emotionRenderer
-        )
+    // 初始化全局依赖（LLM / MCP / 情绪 / 动作 / 对话编排器）
+    DisposableEffect(context) {
+        AppModule.initialize(context)
         onDispose { }
     }
 
@@ -492,25 +480,10 @@ private fun handleUserInput(
         onDialogueUpdate("思考中...")
 
         try {
-            // 添加用户消息到上下文
-            AppModule.contextMemorySystem.addMessage(ChatMessage(role = "user", content = text))
-
-            // 构建 Prompt 并请求 AI
-            val messages = AppModule.contextMemorySystem.buildPromptMessages()
-            val response = AppModule.llmProvider.chat(messages)
-
-            // 添加 AI 回复到上下文
-            AppModule.contextMemorySystem.addMessage(
-                ChatMessage(role = "assistant", content = response.reply_text)
-            )
-
-            // 更新对话显示
-            onDialogueUpdate(response.reply_text)
-
-            // 触发情绪和动作
-            AppModule.emotionEngine.triggerEmotion(response.emotion, fairyEntityProvider() ?: Entity())
-            AppModule.actionRegistry.dispatchAction(response.action_intent, fairyEntityProvider() ?: Entity())
-
+            // 全部经由 ConversationOrchestrator 闭环：
+            //   上下文记忆 → LLM（含 MCP 工具调用） → 情绪/动作 → 回复
+            val result = AppModule.conversationOrchestrator.processUserInput(text)
+            onDialogueUpdate(result.replyText)
         } catch (e: Exception) {
             onDialogueUpdate("抱歉，我遇到了一些问题，请稍后再试。")
         } finally {
