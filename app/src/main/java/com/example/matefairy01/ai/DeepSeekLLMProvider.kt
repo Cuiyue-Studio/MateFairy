@@ -104,6 +104,9 @@ class DeepSeekLLMProvider(
     }
 
     private fun buildStructuredSystemPrompt(basePrompt: String): String {
+        val emotionsStr = com.example.matefairy01.animation.AnimationConfig.supportedEmotions.joinToString("|")
+        val actionsStr = com.example.matefairy01.animation.AnimationConfig.supportedActions.joinToString("|")
+
         return """
             $basePrompt
 
@@ -124,15 +127,15 @@ class DeepSeekLLMProvider(
             {
               "status": "ok" 或 "fallback",
               "reply_text": "显示给用户的中文文本，长度控制在 1 到 80 个汉字内",
-              "emotion": "neutral|happy|sad|angry|shy|surprised|thinking",
-              "action_intent": "none|wave|nod|shake_head|think|mad"
+              "emotion": "$emotionsStr",
+              "action_intent": "$actionsStr"
             }
 
             【字段规则】
             1. status 只能是 "ok" 或 "fallback"。
             2. reply_text 必须是中文字符串，不能为空。
-            3. emotion 只能从 neutral、happy、sad、angry、shy、surprised、thinking 中选择。
-            4. action_intent 只能从 none、wave、nod、shake_head、think、mad 中选择。
+            3. emotion 只能从 $emotionsStr 中选择。
+            4. action_intent 只能从 $actionsStr 中选择。
             5. 字段顺序必须严格为：status、reply_text、emotion、action_intent。
 
             【失败协议】

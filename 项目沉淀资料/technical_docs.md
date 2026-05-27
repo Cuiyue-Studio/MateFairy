@@ -1,7 +1,7 @@
 # MateFairy01 技术文档总览
 
 > 本文档汇总了项目各阶段的技术交接与架构设计文档，用于帮助后续开发人员或 Agent 快速理解项目技术细节与接口约定。
-> 最后更新：2026-05-21
+> 最后更新：2026-05-26
 
 ---
 
@@ -381,3 +381,136 @@ val targetYaw = atan2(velocity.x, velocity.z).toDegrees() + 180f
 - **LookAtComponent 与 UI 附件的方向冲突**：
   PICO Spatial SDK 中，Compose 生成的 2D UI 附件（Attachment）挂载到 3D 实体时，默认是基于实体的局部坐标系。如果实体随模型旋转，UI 会难以阅读。
   **最佳实践**：针对需要被玩家阅读的文本气泡，务必将其与运动模型在层级上剥离。使用单独的实体承载 UI，自己手动同步位置，并借助 `LookAtComponent` 控制朝向。这能完美解决“精灵转身背对玩家时，气泡文字反转不可读”的问题。
+
+
+---
+
+## Phase 9 技术交接：手动空间网格扫描与环境碰撞实体
+
+### 1. 阶段概述
+
+本阶段实现了 MateFairy 在 Stage 全空间中手动开启/关闭 PICO 空间网格扫描的基础能力。开启后，应用会订阅 `MeshTrackingManager` 的 Mesh Anchor 生命周期事件，并将扫描到的真实环境网格转化为 App 侧的静态碰撞实体，为后续精灵与真实环境交互、射线检测、避障和刚体碰撞打基础。
+
+### 2. 核心架构与类说明
+
+#### 2.1 `SpatialMeshManager`
+
+文件路径：`/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/perception/SpatialMeshManager.kt`
+
+职责：
+- 管理 `MeshTrackingManager` 的订阅、启动、停止和释放。
+- 维护 `meshEntities: MutableMap<UUID, Entity>`，记录每个 Mesh Anchor 在 App ECS 场景中对应的碰撞实体。
+- 将真实空间 Mesh Anchor 转换为静态物理碰撞体。
+
+关键方法：
+- `start(parentEntity: Entity)`：注册网格事件订阅并调用 `MeshTrackingManager.start()`。
+- `stop(clearMeshes: Boolean = false)`：调用 `MeshTrackingManager.stop()`，可选清理已生成的环境实体。
+- `dispose()`：停止扫描、清空网格实体并取消订阅。
+- `handleAnchorUpdate(update: AnchorUpdate<MeshAnchor>)`：按 `ADDED`、`UPDATED`、`LOADED`、`REMOVED` 分发处理。
+- `upsertMeshEntity(anchor: MeshAnchor)`：加载 MeshResource，创建 StaticMesh ShapeResource，并挂载 `CollisionComponent`。
+
+核心流程：
+
+```kotlin
+MeshTrackingManager.subscribeAnchorUpdate { update ->
+    mainHandler.post { handleAnchorUpdate(update) }
+}
+
+val mesh = MeshResource.loadFromMeshAnchor(anchor.anchorUUID)
+val shape = ShapeResource.createStaticMesh(mesh)
+val entity = Entity().apply {
+    components[TransformComponent::class.java]?.apply {
+        position = anchor.transform.position
+        quaternion = anchor.transform.quaternion
+    }
+    components.set(
+        CollisionComponent(
+            collisionShape = listOf(shape),
+            physicsMaterial = PhysicsMaterialResource(),
+            collisionResponseMode = CollisionResponseMode.COLLIDER_FULL,
+            collisionFilter = CollisionFilter.COLLISION_FILTER_DEFAULT,
+            collisionInfoDetailLevel = CollisionInfoDetailLevel.BRIEF
+        )
+    )
+}
+parent.addChild(entity)
+```
+
+#### 2.2 `HomeStage` 手动开关
+
+文件路径：`/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt`
+
+新增内容：
+- `val spatialMeshManager = remember { SpatialMeshManager(mainHandler) }`
+- `var isMeshScanningEnabled by remember { mutableStateOf(false) }`
+- `AttachmentPanel(id = "mesh_scan_toggle")` 常驻开关面板。
+- 面板实体记录在 `HomeStageRuntimeState.meshScanToggleAttachmentEntity` 中，加入 `SpatialView` 场景并设置 `LookAtComponent`。
+
+开关逻辑：
+
+```kotlin
+val nextEnabled = !isMeshScanningEnabled
+isMeshScanningEnabled = nextEnabled
+if (nextEnabled) {
+    spatialMeshManager.start(rootEntity)
+} else {
+    spatialMeshManager.stop(clearMeshes = true)
+}
+```
+
+### 3. SDK/框架避坑指南
+
+1. **Mesh Tracking 必须运行在 Full Space**
+   - 当前工程使用 `DefaultStage`，满足 Full Space 前置条件。
+
+2. **ECS 组件操作要回到主线程**
+   - `SpatialMeshManager` 通过 `Handler(Looper.getMainLooper())` 将 Mesh Anchor 回调中的实体创建和组件修改投递到主线程执行。
+
+3. **Transform 使用 quaternion 而不是 rotation**
+   - `MeshAnchor.transform.rotation` 是 `EulerAngles`。
+   - `TransformComponent.quaternion` 需要 `Quat`，因此必须使用 `anchor.transform.quaternion`。
+
+4. **Kotlin daemon 沙箱权限问题**
+   - 当前命令行环境下，默认 Kotlin daemon 可能因为无法写入 `~/Library/Application Support/kotlin/daemon` 而失败。
+   - 可使用 `--no-daemon -Dkotlin.compiler.execution.strategy=in-process` 进行编译验证。
+
+5. **当前不渲染 Mesh Debug 可视化**
+   - 环境实体没有 `ModelComponent`，只有 `CollisionComponent`。
+   - 若要查看扫描网格，应额外给实体添加 `ModelComponent(mesh, debugMaterial)`，并提供调试开关。
+
+### 4. 设计说明
+
+- 本阶段选择“手动开关默认关闭”是为了先控制变量，验证 PICO 网格扫描、事件订阅、网格加载和碰撞实体生成链路是否稳定。
+- 关闭扫描时使用 `clearMeshes = true`，符合当前 MVP 需求：手动关闭即清理 App 侧生成的环境碰撞体，避免用户误以为扫描仍然影响物理世界。
+- 动态扫描、区块卸载、前方场景密度检测暂不进入本阶段，避免在基础链路未验证前引入复杂状态机。
+
+### 5. 资源文件说明
+
+- 修改：`/Users/bytedance/MateFairy/app/src/main/AndroidManifest.xml`
+  - 新增 `com.picovr.permission.SPATIAL_DATA` 权限。
+- 修改：`/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt`
+  - 新增空间扫描开关 UI、扫描管理器生命周期、当前运行时架构接入。
+- 新增：`/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/perception/SpatialMeshManager.kt`
+  - 封装 MeshTrackingManager 与 Mesh Anchor 到碰撞实体的转换逻辑。
+
+
+### Phase 9 补充技术说明：Debug Mesh 线框可视化
+
+`SpatialMeshManager.upsertMeshEntity(anchor)` 当前会为扫描网格同时生成渲染组件和碰撞组件：
+
+```kotlin
+val mesh = MeshResource.loadFromMeshAnchor(anchor.anchorUUID)
+val shape = ShapeResource.createStaticMesh(mesh)
+val debugMaterial = UnlitMaterial.create().apply {
+    setBaseColor(Color4(0.1f, 1.0f, 0.55f, 0.75f))
+    setPolygonFillMode(PolygonFillMode.LINE)
+}
+
+components.set(ModelComponent(mesh, debugMaterial))
+components.set(CollisionComponent(collisionShape = listOf(shape), ...))
+```
+
+注意事项：
+- 线框渲染仅用于调试扫描覆盖范围和空间对齐情况，长时间开启会增加渲染开销。
+- 后续如需产品化，应增加独立 Debug 开关，允许只保留碰撞体而隐藏 `ModelComponent`。
+- 关闭空间扫描时，当前实现会销毁实体，因此 Debug 网格和碰撞体都会一起清理。

@@ -1,7 +1,7 @@
 # MateFairy01 工作汇报总览
 
 > 本文档汇总了项目各阶段的工作汇报，用于快速了解项目开发进度与完成情况。
-> 最后更新：2026-05-21
+> 最后更新：2026-05-26
 
 ---
 
@@ -246,3 +246,66 @@
 ### 三、后续开发建议
 - **语音输入集成**：对接真实的语音转文字（ASR）模块，替换目前的自动化测试输入，实现真正的语音交互。
 - **意图扩展**：根据大模型返回的 `action_intent`，在 `ActionRegistry` 中实现并绑定更多有趣的精灵飞行动作。
+
+
+---
+
+## Phase 9 工作汇报：手动空间网格扫描开关与环境碰撞体接入
+
+### 一、功能开发完成情况
+
+1. **空间感知权限配置**
+   - 修改 `/Users/bytedance/MateFairy/app/src/main/AndroidManifest.xml`，新增 `com.picovr.permission.SPATIAL_DATA` 权限，为 Full Space 下读取空间网格数据做准备。
+
+2. **新增空间网格管理器**
+   - 新增 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/perception/SpatialMeshManager.kt`。
+   - 封装 `MeshTrackingManager.subscribeAnchorUpdate`、`start()`、`stop()` 和订阅释放逻辑。
+   - 对 `ADDED`、`UPDATED`、`LOADED` 事件调用 `MeshResource.loadFromMeshAnchor(anchorUUID)` 获取网格，并使用 `ShapeResource.createStaticMesh(mesh)` 生成静态网格碰撞体。
+   - 对 `REMOVED` 事件销毁对应的环境实体，避免保留失效碰撞体。
+
+3. **手动开关 UI 接入**
+   - 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt`。
+   - 新增常驻的 `AttachmentPanel(id = "mesh_scan_toggle")`，默认显示“开启空间扫描”。
+   - 点击开启后调用 `SpatialMeshManager.start(rootEntity)`；再次点击关闭后调用 `SpatialMeshManager.stop(clearMeshes = true)`，停止扫描并清理已生成的网格碰撞实体。
+   - 面板随 HMD 姿态保持在用户视野前方，并通过 `LookAtComponent` 面向用户。
+
+4. **运行时装配同步修复**
+   - `HomeStage.kt` 从旧的 `AppModule` 单例调用迁移为当前工程中的 `MateFairyRuntimeFactory` / `MateFairyRuntime`。
+   - 通过 `BehaviorRuntimeDependencies.bindAvatarController(runtime.avatarController)` 将动画控制器绑定给行为系统。
+   - `handleUserInput()` 改为调用 `runtime.conversationOrchestrator.processUserInput(text)`，与当前运行时架构保持一致。
+
+### 二、编译与测试情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin --no-daemon -Dkotlin.compiler.execution.strategy=in-process`
+- 结果：编译通过。
+- 说明：默认 Kotlin daemon 在当前沙箱环境中写入 `~/Library/Application Support/kotlin/daemon` 时报 `Operation not permitted`，因此使用 in-process 编译策略完成验证。
+- IDE 诊断：`GetDiagnostics` 返回空列表。
+
+### 三、技术债务与踩坑记录
+
+1. **暂未实现动态扫描开关与动态卸载**
+   - 本阶段按决策只做手动开关，默认关闭。
+   - 关闭开关时会清理本次 App 内生成的网格碰撞实体，但未实现基于距离的区块化流式卸载。
+
+2. **暂未改造精灵刚体悬浮系统**
+   - 本阶段优先打通真实网格扫描与环境碰撞体生成链路。
+   - `FairyBehaviorSystem` 仍保留原有基于 `TransformComponent.position` 的跟随/随机运动逻辑。
+
+3. **空间网格仅生成碰撞体，默认不渲染 Debug 网格**
+   - 当前环境实体只挂载 `CollisionComponent`，没有 `ModelComponent`，因此不会显示线框网格。
+   - 后续如果需要调试对齐，可加 Debug 材质与可视化开关。
+
+### 四、后续开发建议
+
+1. 增加 Debug Mesh 可视化开关，方便验证扫描网格与真实场景是否对齐。
+2. 在 `SpatialMeshManager` 中补充加载数量、事件数量、当前扫描状态的日志或 UI 状态提示。
+3. 下一阶段再进行精灵 `RigidBodyComponent + CollisionComponent + RayCast` 的物理悬浮/避障改造。
+4. 后续实现基于 HMD 距离的网格流式加载与卸载，避免长时间出门探索造成内存压力。
+
+
+### Phase 9 补充：空间网格 Debug 线框渲染
+
+- 在 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/perception/SpatialMeshManager.kt` 中为每个 Mesh Anchor 实体额外添加 `ModelComponent(mesh, debugMaterial)`。
+- Debug 材质使用 `UnlitMaterial.create()`，颜色为半透明绿色，并设置 `PolygonFillMode.LINE`，用于在 Mixed Stage 中直观看到 PICO 扫描出来的空间网格轮廓。
+- 保留原有 `CollisionComponent`，因此线框显示与静态碰撞体共用同一份 `MeshResource`。
+- 已执行 `./gradlew :app:compileDebugKotlin --no-daemon -Dkotlin.compiler.execution.strategy=in-process`，编译通过；`GetDiagnostics` 返回空列表。
