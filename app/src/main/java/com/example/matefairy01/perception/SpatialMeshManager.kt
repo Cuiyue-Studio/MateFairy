@@ -65,6 +65,7 @@ class SpatialMeshManager(
             AnchorUpdate.Event.UPDATED,
             AnchorUpdate.Event.LOADED -> upsertMeshEntity(update.anchor)
             AnchorUpdate.Event.REMOVED -> removeMeshEntity(update.anchor.anchorUUID)
+            else -> Unit
         }
     }
 
