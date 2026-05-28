@@ -17,12 +17,13 @@ enum class AnimationType(val priority: AnimationPriority) {
  * 动画配置映射
  *
  * 根据模型文件 (pico_robot_animated.glb) 中的轨道索引映射：
- * 0: Action (Mad)
- * 1: idle
- * 2: jump
- * 3: look_around
- * 4: walk_forward
- * 5: wave
+ * 0: 05_mad_action
+ * 1: Action (无用轨道，忽略)
+ * 2: idle
+ * 3: jump
+ * 4: look_around
+ * 5: walk_forward
+ * 6: wave
  */
 enum class FairyAnimation(
     val trackIndex: Int, 
@@ -33,17 +34,17 @@ enum class FairyAnimation(
 ) {
     // --- 情绪动画 (EMOTION) ---
     MAD_ACTION(0, "Mad Action", AnimationType.EMOTION_REACTION, 3000L, "angry"),
-    HAPPY_JUMP(2, "Happy Jump", AnimationType.EMOTION_REACTION, 2000L, "happy"),
-    SHY_LOOK(3, "Shy Look", AnimationType.EMOTION_REACTION, 2500L, "shy"),
+    HAPPY_JUMP(3, "Happy Jump", AnimationType.EMOTION_REACTION, 2000L, "happy"), // 复用 jump 动画作为开心反应
+    SHY_LOOK(4, "Shy Look", AnimationType.EMOTION_REACTION, 2500L, "shy"), // 复用 look_around 作为害羞反应
 
     // --- 指令动画 (ACTION) ---
-    HELLO_WAVE(5, "Hello Wave", AnimationType.NON_TASK_ACTION, 2000L, "wave"),
+    HELLO_WAVE(6, "Hello Wave", AnimationType.NON_TASK_ACTION, 2000L, "wave"),
 
     // --- 常驻动画 (BASE) ---
-    STANDBY_MODE(1, "Standby", AnimationType.BASE_IDLE, 3000L),
-    SPIN_LEAP(2, "Spin Leap", AnimationType.BASE_MOVING, 2000L),
-    CURIOUS_LOOK(3, "Curious Look", AnimationType.BASE_IDLE, 2500L),
-    TURBO_DASH(4, "Turbo Dash", AnimationType.BASE_MOVING, 1500L)
+    STANDBY_MODE(2, "Standby", AnimationType.BASE_IDLE, 3000L),
+    SPIN_LEAP(3, "Spin Leap", AnimationType.BASE_MOVING, 2000L),
+    CURIOUS_LOOK(4, "Curious Look", AnimationType.BASE_IDLE, 2500L),
+    TURBO_DASH(5, "Turbo Dash", AnimationType.BASE_MOVING, 1500L)
 }
 
 object AnimationConfig {
