@@ -35,17 +35,17 @@ enum class FairyAnimation(
 ) {
     // --- 情绪动画 (EMOTION) ---
     MAD_ACTION(5, "Mad Action", AnimationType.EMOTION_REACTION, 3000L, "angry"),
-    HAPPY_JUMP(1, "Happy Jump", AnimationType.EMOTION_REACTION, 2000L, "happy"), // 复用 jump
-    SHY_LOOK(2, "Shy Look", AnimationType.EMOTION_REACTION, 2500L, "shy"), // 复用 look_around
 
     // --- 指令动画 (ACTION) ---
-    HELLO_WAVE(4, "Hello Wave", AnimationType.NON_TASK_ACTION, 2000L, "wave"),
+    // 目前指令动画暂未就绪，留空。后期直接在这里增加即可。
 
     // --- 常驻动画 (BASE) ---
+    // 这里全是原有的老动画，均作为兜底的基础表现
     STANDBY_MODE(0, "Standby", AnimationType.BASE_IDLE, 3000L),
     SPIN_LEAP(1, "Spin Leap", AnimationType.BASE_MOVING, 2000L),
     CURIOUS_LOOK(2, "Curious Look", AnimationType.BASE_IDLE, 2500L),
-    TURBO_DASH(3, "Turbo Dash", AnimationType.BASE_MOVING, 1500L)
+    TURBO_DASH(3, "Turbo Dash", AnimationType.BASE_MOVING, 1500L),
+    HELLO_WAVE(4, "Hello Wave", AnimationType.BASE_IDLE, 2000L)
 }
 
 object AnimationConfig {
