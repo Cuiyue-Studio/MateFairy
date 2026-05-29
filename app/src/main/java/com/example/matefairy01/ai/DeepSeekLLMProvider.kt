@@ -80,6 +80,34 @@ class DeepSeekLLMProvider(
         executeRequestContent(payload).ifBlank { "暂无摘要。" }
     }
 
+    /**
+     * 通用纯文本补全。不走结构化 JSON 协议，不强制 emotion/action 字段。
+     * 供 FactExtractor / ContradictionChecker / DreamJob 等旁路任务使用。
+     */
+    override suspend fun complete(
+        systemPrompt: String,
+        userMessage: String,
+        maxTokens: Int?,
+        temperature: Double?
+    ): String = withContext(Dispatchers.IO) {
+        validateConfig()
+
+        val messages = listOf(
+            ChatMessage(role = "system", content = systemPrompt),
+            ChatMessage(role = "user", content = userMessage)
+        )
+
+        val payload = JSONObject().apply {
+            put("model", config.summaryModel.ifBlank { config.model })
+            put("messages", buildChatMessagesJson(messages, structured = false))
+            put("max_tokens", maxTokens ?: config.summaryMaxTokens)
+            put("temperature", temperature ?: 0.2)
+            put("stream", false)
+        }
+
+        executeRequestContent(payload)
+    }
+
     // ---------------- 无工具：原结构化路径 ----------------
 
     private fun chatStructured(messages: List<ChatMessage>): AIResponse {

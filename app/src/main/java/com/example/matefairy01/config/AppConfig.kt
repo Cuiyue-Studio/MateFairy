@@ -3,12 +3,20 @@ package com.example.matefairy01.config
 import android.content.Context
 import com.example.matefairy01.mcp.McpServerConfig
 import com.example.matefairy01.mcp.McpTransportType
+import com.example.matefairy01.memory.ConsolidateConfig
+import com.example.matefairy01.memory.DreamConfig
+import com.example.matefairy01.memory.EmbeddingConfig
+import com.example.matefairy01.memory.FactIngestConfig
+import com.example.matefairy01.memory.IngestionConfig
+import com.example.matefairy01.memory.MemoryConfig
+import com.example.matefairy01.memory.RetrievalConfig
 import org.json.JSONArray
 import org.json.JSONObject
 
 data class AppConfig(
     val ai: AIConfig = AIConfig(),
-    val mcpServers: List<McpServerConfig> = emptyList()
+    val mcpServers: List<McpServerConfig> = emptyList(),
+    val memory: MemoryConfig = MemoryConfig()
 )
 
 data class AIConfig(
@@ -67,11 +75,94 @@ object AppConfigLoader {
             val root = JSONObject(raw)
             val config = AppConfig(
                 ai = parseAIConfig(root.optJSONObject("ai")),
-                mcpServers = parseMcpServers(root.optJSONObject("mcpServers"))
+                mcpServers = parseMcpServers(root.optJSONObject("mcpServers")),
+                memory = parseMemoryConfig(root.optJSONObject("memory"))
             )
             cachedConfig = config
             return config
         }
+    }
+
+    private fun parseMemoryConfig(json: JSONObject?): MemoryConfig {
+        val defaults = MemoryConfig()
+        if (json == null) return defaults
+
+        return MemoryConfig(
+            consolidate = parseConsolidateConfig(json.optJSONObject("consolidate")),
+            factIngest = parseFactIngestConfig(json.optJSONObject("factIngest")),
+            dream = parseDreamConfig(json.optJSONObject("dream")),
+            ingestion = parseIngestionConfig(json.optJSONObject("ingestion")),
+            retrieval = parseRetrievalConfig(json.optJSONObject("retrieval")),
+            embedding = parseEmbeddingConfig(json.optJSONObject("embedding"))
+        )
+    }
+
+    private fun parseConsolidateConfig(json: JSONObject?): ConsolidateConfig {
+        val defaults = ConsolidateConfig()
+        if (json == null) return defaults
+        return ConsolidateConfig(
+            tokenThreshold = json.optInt("tokenThreshold", defaults.tokenThreshold),
+            turnFallback = json.optInt("turnFallback", defaults.turnFallback)
+        )
+    }
+
+    private fun parseFactIngestConfig(json: JSONObject?): FactIngestConfig {
+        val defaults = FactIngestConfig()
+        if (json == null) return defaults
+        return FactIngestConfig(
+            minChars = json.optInt("minChars", defaults.minChars),
+            throttleMs = json.optLong("throttleMs", defaults.throttleMs)
+        )
+    }
+
+    private fun parseDreamConfig(json: JSONObject?): DreamConfig {
+        val defaults = DreamConfig()
+        if (json == null) return defaults
+        val override = json.optString("modelOverride", "").takeIf { it.isNotBlank() }
+        return DreamConfig(
+            idleMs = json.optLong("idleMs", defaults.idleMs),
+            runOnPause = json.optBoolean("runOnPause", defaults.runOnPause),
+            maxBatchSize = json.optInt("maxBatchSize", defaults.maxBatchSize),
+            maxIterations = json.optInt("maxIterations", defaults.maxIterations),
+            modelOverride = override
+        )
+    }
+
+    private fun parseIngestionConfig(json: JSONObject?): IngestionConfig {
+        val defaults = IngestionConfig()
+        if (json == null) return defaults
+        return IngestionConfig(
+            flushTimeoutPerJobMs = json.optLong("flushTimeoutPerJobMs", defaults.flushTimeoutPerJobMs)
+        )
+    }
+
+    private fun parseRetrievalConfig(json: JSONObject?): RetrievalConfig {
+        val defaults = RetrievalConfig()
+        if (json == null) return defaults
+        return RetrievalConfig(
+            weightSimilarity = json.optDouble("weightSimilarity", defaults.weightSimilarity.toDouble()).toFloat(),
+            weightRecency = json.optDouble("weightRecency", defaults.weightRecency.toDouble()).toFloat(),
+            weightImportance = json.optDouble("weightImportance", defaults.weightImportance.toDouble()).toFloat(),
+            recencyHalfLifeDays = json.optDouble("recencyHalfLifeDays", defaults.recencyHalfLifeDays.toDouble()).toFloat(),
+            topKEpisodic = json.optInt("topKEpisodic", defaults.topKEpisodic),
+            topKFacts = json.optInt("topKFacts", defaults.topKFacts)
+        )
+    }
+
+    private fun parseEmbeddingConfig(json: JSONObject?): EmbeddingConfig {
+        val defaults = EmbeddingConfig()
+        if (json == null) return defaults
+        return EmbeddingConfig(
+            provider = json.optString("provider", defaults.provider),
+            baseUrl = json.optString("baseUrl", defaults.baseUrl).trimEnd('/'),
+            apiKey = json.optString("apiKey", defaults.apiKey),
+            model = json.optString("model", defaults.model),
+            dimension = json.optInt("dimension", defaults.dimension),
+            maxLength = json.optInt("maxLength", defaults.maxLength),
+            connectTimeoutMs = json.optLong("connectTimeoutMs", defaults.connectTimeoutMs),
+            readTimeoutMs = json.optLong("readTimeoutMs", defaults.readTimeoutMs),
+            batchSize = json.optInt("batchSize", defaults.batchSize)
+        )
     }
 
     private fun parseMcpServers(json: JSONObject?): List<McpServerConfig> {

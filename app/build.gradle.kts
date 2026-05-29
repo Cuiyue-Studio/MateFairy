@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.google.ksp)
 }
 
 android {
@@ -39,7 +40,9 @@ android {
         compose = true
     }
     androidResources {
-        noCompress += listOf("bundle", "glb", "usdz", "wav")
+        // 注意：onnx/json 加进白名单是为后续接入 ONNX Runtime + tokenizer 准备
+        // 如果被压缩，模型无法 mmap 加载，体积虚胖且推理变慢，且不会报错最难排查
+        noCompress += listOf("bundle", "glb", "usdz", "wav", "onnx", "json")
     }
 }
 
@@ -58,6 +61,11 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.squareup.okhttp)
+    // 记忆系统 L2/L3：Room 提供 SQLite ORM + FTS；lifecycle-process 用于 onPause flush 钩子
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
+    implementation(libs.androidx.lifecycle.process)
     implementation(project(":editor-asset"))
     testImplementation(libs.junit)
     testImplementation("org.json:json:20231013") // 增加 org.json 的 JVM 依赖以供单元测试使用

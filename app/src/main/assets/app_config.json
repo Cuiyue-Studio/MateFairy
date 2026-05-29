@@ -33,5 +33,44 @@
       "toolTimeoutMs": 30000,
       "enabledTools": ["*"]
     }
+  },
+  "memory": {
+    "consolidate": {
+      "tokenThreshold": 3000,
+      "turnFallback": 10
+    },
+    "factIngest": {
+      "minChars": 30,
+      "throttleMs": 30000
+    },
+    "dream": {
+      "idleMs": 300000,
+      "runOnPause": false,
+      "maxBatchSize": 20,
+      "maxIterations": 10,
+      "modelOverride": null
+    },
+    "ingestion": {
+      "flushTimeoutPerJobMs": 15000
+    },
+    "retrieval": {
+      "weightSimilarity": 0.6,
+      "weightRecency": 0.25,
+      "weightImportance": 0.15,
+      "recencyHalfLifeDays": 7,
+      "topKEpisodic": 5,
+      "topKFacts": 8
+    },
+    "embedding": {
+      "provider": "openai_compatible",
+      "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+      "apiKey": "",
+      "model": "embedding-3",
+      "dimension": 1024,
+      "maxLength": 512,
+      "connectTimeoutMs": 5000,
+      "readTimeoutMs": 15000,
+      "batchSize": 16
+    }
   }
 }

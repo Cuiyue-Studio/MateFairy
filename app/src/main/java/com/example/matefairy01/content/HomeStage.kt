@@ -30,7 +30,6 @@ import com.example.matefairy01.input.HandClapDetector
 import com.example.matefairy01.input.InputControllerManager
 import com.example.matefairy01.perception.SpatialMeshManager
 import com.example.matefairy01.runtime.MateFairyRuntime
-import com.example.matefairy01.runtime.MateFairyRuntimeFactory
 import com.example.matefairy01.ui.FairyDialogueUI
 import com.example.matefairy01.ui.GameUIContainer
 import com.example.matefairy01.ui.SharedUIManager
@@ -100,7 +99,11 @@ fun HomeStage() {
     val appConfig = remember(context) { AppConfigLoader.load(context) }
     val textInputProvider = SharedUIManager.textInputProvider
     val voiceInputProvider = SharedUIManager.voiceInputProvider
-    val runtime = remember(appConfig) { MateFairyRuntimeFactory.create(appConfig) }
+    // runtime 由 SpatialApplication 在 onCreate 阶段一次性装配；
+    // 此处仅取引用，避免每次进入 HomeStage 都重新创建（embedder / mcp 等也会被多重持有）。
+    val runtime = remember(context) {
+        (context.applicationContext as com.example.matefairy01.platform.SpatialApplication).runtime
+    }
     
     // AI 对话状态
     var dialogueText by remember { mutableStateOf("") }
