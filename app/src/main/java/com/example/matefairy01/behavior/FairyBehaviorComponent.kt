@@ -1,6 +1,7 @@
 package com.example.matefairy01.behavior
 
 import com.pico.spatial.core.ecs.Component
+import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.math.Vector3
 
 enum class FairyState {
@@ -24,6 +25,9 @@ class FairyBehaviorComponent(
     var isWaitingForAnimation: Boolean = false // 是否正在等待静止时动画播放完毕
     
     var velocity: Vector3 = Vector3(0f, 0f, 0f)
+    var lastPosition: Vector3 = Vector3(0f, 0f, 0f)
+    var hasRecordedLastPosition: Boolean = false
+    var visualEntity: Entity? = null
     var currentYaw: Float = 0f
     
     // Initial rotation from the model's USD transform (to keep the robot standing upright)

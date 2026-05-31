@@ -37,6 +37,15 @@ import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.ecs.LookAtComponent
 import com.pico.spatial.core.ecs.resource.AssetBundle
 import com.pico.spatial.core.ecs.TransformComponent
+import com.pico.spatial.core.ecs.PhysicsWorldComponent
+import com.pico.spatial.core.ecs.PhysicsForceComponent
+import com.pico.spatial.core.ecs.RigidBodyComponent
+import com.pico.spatial.core.ecs.simulation.RigidBodyMode
+import com.pico.spatial.core.ecs.CollisionComponent
+import com.pico.spatial.core.ecs.simulation.CollisionResponseMode
+import com.pico.spatial.core.ecs.resource.ShapeResource
+import com.pico.spatial.core.ecs.resource.PhysicsMaterialResource
+import com.pico.spatial.core.math.Bool3
 import com.pico.spatial.core.math.Quat
 import com.pico.spatial.core.math.Vector3
 import com.pico.spatial.tracking.controller.ControllerTrackingProvider
@@ -76,7 +85,7 @@ fun HomeStage() {
     val scope = rememberCoroutineScope()
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val runtimeState = remember { HomeStageRuntimeState() }
-    val rootEntity = remember { Entity() }
+    val rootEntity = remember { Entity().apply { components.set(PhysicsWorldComponent(Vector3(0f, -9.81f, 0f))) } }
     val hmdEntity = remember { Entity().apply { components.set(HMDTagComponent()) } }
     val spatialMeshManager = remember { SpatialMeshManager(mainHandler) }
     var isMeshScanningEnabled by remember { mutableStateOf(false) }
@@ -97,7 +106,7 @@ fun HomeStage() {
     val textInputProvider = SharedUIManager.textInputProvider
     val voiceInputProvider = SharedUIManager.voiceInputProvider
     val runtime = remember(appConfig) { MateFairyRuntimeFactory.create(appConfig) }
-    
+
     // AI 对话状态
     var dialogueText by remember { mutableStateOf("") }
     var isProcessing by remember { mutableStateOf(false) }
@@ -162,16 +171,16 @@ fun HomeStage() {
             // 检测到3次拍手，开始语音输入
             voiceInputProvider.startListening { result ->
                 handleUserInput(
-                    result, 
+                    result,
                     scope,
                     runtime = runtime,
-                    onDialogueUpdate = { 
+                    onDialogueUpdate = {
                         dialogueText = it
                         dialogueBubbleState = dialogueBubbleState.copy(
                             text = it,
                             isVisible = true
                         )
-                    }, 
+                    },
                     onProcessing = { isProcessing = it }
                 )
             }
@@ -300,10 +309,10 @@ fun HomeStage() {
             val robotTransform = runtimeState.loadedRobotModelEntity?.components?.get(TransformComponent::class.java)
             val textAttachmentTransform =
                 runtimeState.dialogueAttachmentEntity?.components?.get(TransformComponent::class.java)
-            
+
             if (robotTransform != null) {
                 val robotPosition = robotTransform.position
-                
+
                 // 将对话气泡放在机器人头顶
                 textAttachmentTransform?.setPosition(
                     Vector3(
@@ -356,9 +365,30 @@ fun HomeStage() {
                     }
                 }
 
-                // 创建一个包装实体，用于控制整体位移和附加行为组件
+                // 物理代理和视觉模型分离，避免刚体系统干扰 GLB 缩放/动画层级。
+                val robotBody = Entity()
                 val robotModel = Entity()
                 runtimeState.loadedRobotModelEntity = robotModel
+
+                // 物理化配置：刚体 + 碰撞体 + 力组件
+                val fairyShape = ShapeResource.createCapsule(0.35f, 0.1f)
+                val collision = CollisionComponent(
+                    collisionShape = listOf(fairyShape),
+                    physicsMaterial = PhysicsMaterialResource(),
+                    collisionResponseMode = CollisionResponseMode.COLLIDER_FULL
+                )
+                val rigidBody = RigidBodyComponent().apply {
+                    rigidBodyMode = RigidBodyMode.DYNAMIC
+                    isAffectedByGravity = false // 手动射线悬浮
+                    isRotationLocked = Bool3(true, true, true) // 锁定物理旋转，通过脚本手动旋转
+                    linearDamping = 5.0f // 增加线性阻尼，避免过度震荡
+                    angularDamping = 5.0f
+                }
+                val physicsForce = PhysicsForceComponent()
+
+                robotBody.components.set(collision)
+                robotBody.components.set(rigidBody)
+                robotBody.components.set(physicsForce)
 
                 // 将已缩放的 GLB 挂载到 Wrapper
                 robotModel.addChild(glbRoot)
@@ -370,6 +400,14 @@ fun HomeStage() {
                         // Wrapper 本身不再承担缩放职责，保持 1:1
                         scaleVector = Vector3(1f, 1f, 1f)
                     }
+                }
+
+                robotBody.apply {
+                    val bodyTransform = components[TransformComponent::class.java]
+                    bodyTransform?.apply {
+                        position = Vector3(0f, 0f, 0f)
+                        scaleVector = Vector3(1f, 1f, 1f)
+                    }
 
                     // hoverHeight: 精灵相对于头显的高度偏移
                     val behaviorComponent = FairyBehaviorComponent(
@@ -377,10 +415,12 @@ fun HomeStage() {
                         outerRadius = 1.5f,
                         hoverHeight = -0.1f,  // 眼睛视平线往下 10 厘米
                         zDeviationRange = 0.2f // 缩小Z轴随机扰动，保持更好的圆环跟随
-                    )
+                    ).apply {
+                        visualEntity = robotModel
+                    }
 
                     // 由于包装实体初始没有旋转，将其欧拉角作为初始参考
-                    val initialEuler = robotTransform?.eulerAngles
+                    val initialEuler = bodyTransform?.eulerAngles
                     initialEuler?.let {
                         behaviorComponent.initialPitch = it.pitch
                         behaviorComponent.initialRoll = it.roll
@@ -395,9 +435,10 @@ fun HomeStage() {
                 // 初始化动画模块（传入 GLB 根节点，以便查找 SkinnedMeshEntity）
                 runtime.avatarController.initialize(glbRoot)
                 runtime.avatarController.playSpawnAnimation()
-                
+
+                addChild(robotBody)
                 addChild(robotModel)
-                
+
                 rootEntity.addChild(this)
             }
 
@@ -406,7 +447,7 @@ fun HomeStage() {
             // 设置对话文本附件位置（精灵头顶）
             // 在 SDK 新版本中，不再需要在 initial 中预挂载 attachments，
             // 全部由 update 中扫描补齐
-            
+
             content.addEntity(rootEntity)
 
             rootEntity.addChild(hmdEntity)

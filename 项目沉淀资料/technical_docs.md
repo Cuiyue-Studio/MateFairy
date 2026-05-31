@@ -64,7 +64,7 @@ Phase 1 阶段已完成核心底层架构和基础接口的定义，主要包括
 - **方法**:
   - `suspend fun execute(fairyEntity: Entity, params: Map<String, Any> = emptyMap())`
     - **功能**: 执行空间实体动作。
-    - **传参**: 
+    - **传参**:
       - `fairyEntity`: PICO Spatial SDK 中的精灵实体。
       - `params`: 附加的动作参数字典。
 
@@ -96,7 +96,7 @@ Phase 1 阶段已完成核心底层架构和基础接口的定义，主要包括
 
 **核心组件: `ContextMemorySystem`**
 - **功能**: 基于滑动窗口的短期记忆 + 异步摘要的长期记忆系统。
-- **构造参数**: 
+- **构造参数**:
   - `llmProvider: ILLMProvider` (依赖注入大模型服务)
   - `windowSize: Int` (短期记忆保留的轮数，默认 3)
 - **方法**:
@@ -194,7 +194,7 @@ Phase 1 阶段已完成核心底层架构和基础接口的定义，主要包括
 1. **添加组件的方法**: `Entity` 并没有 `.addComponent()` 方法，而是维护了一个 `ComponentSet`，需要使用 `entity.components.set(YourComponent())` 或是 `entity.components[YourComponent::class.java] = YourComponent()` 来添加和替换组件。
 2. **注册系统的包路径**: 使用 DSL 注册系统时，需引入 `import com.pico.spatial.ui.foundation.dsl.registerSystem`，而不是 `core.scene`。
 3. **坐标系体系**: `TransformComponent` 的位置（position）为 `Vector3`，旋转（rotation）为 `Quat` 或欧拉角 `EulerAngles`。
-4. **旋转覆盖陷阱（极其重要）**: 
+4. **旋转覆盖陷阱（极其重要）**:
    - `TransformComponent.eulerAngles` 的 setter 会完全覆盖旋转。
    - 如果模型在 USD 中设置了初始旋转（如为了站立），任何后续代码设置 `eulerAngles = EulerAngles(0f, yaw, 0f)` 都会将其破坏。
    - **解决方案**: 在组件中记录初始 `pitch`/`roll`，后续更新时将其拼回：`EulerAngles(initialPitch, currentYaw, initialRoll)`。
@@ -302,10 +302,10 @@ val targetYaw = atan2(velocity.x, velocity.z).toDegrees() + 180f
   val glbRoot = Entity.load("asset://model.glb")
   val wrapper = Entity() // 创建空包装器
   wrapper.addChild(glbRoot)
-  
+
   // 在包装器上进行缩放、位移和组件挂载
   wrapper.components[TransformComponent::class.java]?.apply {
-      scaleVector = Vector3(0.1f, 0.1f, 0.1f) 
+      scaleVector = Vector3(0.1f, 0.1f, 0.1f)
   }
   // 将逻辑组件挂载在包装器上
   wrapper.components.set(behaviorComponent)
@@ -344,7 +344,7 @@ val targetYaw = atan2(velocity.x, velocity.z).toDegrees() + 180f
   glbRoot.components[TransformComponent::class.java]?.apply {
       scaleVector = Vector3(0.35f, 0.35f, 0.35f)
   }
-  
+
   // Wrapper 仅作为逻辑容器，保持 1:1 缩放
   val robotModel = Entity()
   robotModel.addChild(glbRoot)
@@ -514,3 +514,88 @@ components.set(CollisionComponent(collisionShape = listOf(shape), ...))
 - 线框渲染仅用于调试扫描覆盖范围和空间对齐情况，长时间开启会增加渲染开销。
 - 后续如需产品化，应增加独立 Debug 开关，允许只保留碰撞体而隐藏 `ModelComponent`。
 - 关闭空间扫描时，当前实现会销毁实体，因此 Debug 网格和碰撞体都会一起清理。
+
+
+### Phase 9 补充技术说明：刚体精灵与射线悬浮
+
+本阶段对精灵实体进行了全面物理化改造，使其能够与 PICO 扫描生成的环境网格进行物理碰撞，同时避免了死板的穿模。
+
+#### 1. 实体物理配置 (`HomeStage.kt`)
+```kotlin
+val fairyShape = ShapeResource.createCapsule(0.1f, 0.3f)
+val collision = CollisionComponent(
+    collisionShape = listOf(fairyShape),
+    physicsMaterial = PhysicsMaterialResource(),
+    collisionResponseMode = CollisionResponseMode.COLLIDER_FULL
+)
+val rigidBody = RigidBodyComponent().apply {
+    rigidBodyMode = RigidBodyMode.DYNAMIC
+    isAffectedByGravity = false // 不受默认重力影响，完全由代码力驱动
+    isRotationLocked = Bool3(true, true, true) // 锁定物理旋转
+    linearDamping = 5.0f // 增加线性阻尼，避免受到冲量后过度滑行或震荡
+    angularDamping = 5.0f
+}
+val physicsForce = PhysicsForceComponent()
+```
+
+#### 2. 行为系统改造 (`FairyBehaviorSystem.kt`)
+旧有逻辑依赖于直接覆盖 `transform.position`，会破坏物理引擎计算。新逻辑基于**PD力控制**与**射线检测**：
+- **速度计算**：由于 PICO SDK 未直接暴露实时物理速度的读取接口，此处通过 `(currentPos - lastPos) / dt` 来手动计算 `actualVelocity`。
+- **目标追踪**：计算 `desiredVelocity`，然后通过比例增益 `(desiredVelocity - actualVelocity) * pGain` 转化为力施加到刚体上。
+- **射线悬浮（Raycast Hover）**：
+  ```kotlin
+  val raycastDown = context.scene.rayCast(
+      origin = fairyPos,
+      direction = Vector3(0f, -1f, 0f),
+      length = 0.6f,
+      hitMode = CollisionCastHitMode.NEAREST,
+      group = CollisionGroup(CollisionGroup.COLLISION_GROUP_ALL)
+  )
+  ```
+  如果检测到下方存在刚体（如扫描的真实地板、桌子），且距离小于 `0.4m`，则施加额外的向上的强力（`suspensionForce`），像气垫船一样将精灵推离地面，实现“贴地飞行”并有效避免与凹凸不平的扫描网格直接物理磕碰导致的抽搐。
+- **转向**：因物理旋转已锁定，在代码中根据速度方向继续使用 `transform.eulerAngles` 赋值实现平滑转向。
+
+
+### Phase 9 补充技术说明：刚体代理与视觉模型解耦
+
+为修复刚体改造后“模型变小”和“疯狂打转”的问题，当前架构改为：
+
+1. `robotBody`
+   - 不可见物理代理实体。
+   - 挂载 `CollisionComponent`、`RigidBodyComponent`、`PhysicsForceComponent` 和 `FairyBehaviorComponent`。
+   - 参与物理碰撞、受力、射线悬浮和行为状态机。
+
+2. `robotModel`
+   - 可见 GLB 视觉实体。
+   - 只承载模型、动画和视觉 Transform。
+   - 不再直接挂 `RigidBodyComponent`，避免物理系统修改视觉层级缩放。
+
+核心同步逻辑位于 `FairyBehaviorSystem`：
+
+```kotlin
+val visualTransform =
+    behavior.visualEntity?.components?.get(TransformComponent::class.java) ?: transform
+
+// 物理代理位置驱动视觉模型
+visualTransform.position = fairyPos
+
+// 仅视觉层应用朝向，物理胶囊保持旋转锁定
+visualTransform.eulerAngles = EulerAngles(
+    pitch = pitch,
+    yaw = behavior.currentYaw,
+    roll = roll
+)
+```
+
+朝向策略：
+- 移动状态使用“目标方向”计算 yaw，避免物理位置抖动导致角度随机跳变。
+- 悬停面向玩家状态使用玩家相对方向计算 yaw。
+- 不再用 `actualVelocity` 直接计算 yaw。
+
+射线悬浮过滤策略：
+
+```kotlin
+val floorHit = raycastDown.results.firstOrNull { it.entity != fairyEntity }
+```
+
+该过滤避免下方射线命中精灵自己的胶囊碰撞体，从而避免错误悬浮力反馈。
