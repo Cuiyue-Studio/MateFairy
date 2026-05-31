@@ -1,6 +1,5 @@
 package com.example.matefairy01.content
 
-import android.content.pm.ApplicationInfo
 import android.os.Handler
 import android.os.Looper
 import androidx.compose.foundation.background
@@ -53,12 +52,9 @@ import com.pico.spatial.ui.design.Text
 import com.pico.spatial.ui.platform.meters
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 data class DialogueBubbleState(
@@ -223,43 +219,6 @@ fun HomeStage() {
         }
     }
 
-    val autoTestEnabled =
-        (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) &&
-            appConfig.ai.autoTest.enabled
-
-    DisposableEffect(autoTestEnabled, appConfig.ai.autoTest.intervalMs, appConfig.ai.autoTest.promptPool) {
-        val job: Job? =
-            if (autoTestEnabled && appConfig.ai.autoTest.promptPool.isNotEmpty()) {
-                scope.launch {
-                    while (isActive) {
-                        val prompt = appConfig.ai.autoTest.promptPool.randomOrNull()
-                        if (!prompt.isNullOrBlank()) {
-                            handleUserInput(
-                                text = prompt,
-                                scope = this,
-                                runtime = runtime,
-                                onDialogueUpdate = {
-                                    dialogueText = it
-                                    dialogueBubbleState = dialogueBubbleState.copy(
-                                        text = it,
-                                        isVisible = true
-                                    )
-                                },
-                                onProcessing = { isProcessing = it }
-                            )
-                        }
-                        delay(appConfig.ai.autoTest.intervalMs.coerceAtLeast(1000L))
-                    }
-                }
-            } else {
-                null
-            }
-
-        onDispose {
-            job?.cancel()
-        }
-    }
-
     SpatialView(
         modifier = Modifier.requiredSize(10.meters),
         update = { content, attachments ->
@@ -286,39 +245,13 @@ fun HomeStage() {
                     if (inputEntity.components[TransformComponent::class.java] == null) {
                         inputEntity.components[TransformComponent::class.java] = TransformComponent()
                     }
-                    if (inputEntity.components[LookAtComponent::class.java] == null) {
-                        inputEntity.components[LookAtComponent::class.java] = LookAtComponent().apply {
-                            setViewerAsTarget()
-                            alignLocalUpToWorldUp = true
-                        }
-                    }
-                    content.addEntity(inputEntity)
+                    hmdEntity.addChild(inputEntity)
                 }
 
-                // 计算头部前方 0.65m 的位置，并略微降低高度
-                val hmdPose = hmdTrackingData.hmdPose
-                
-                // 计算头部前方 0.65m 的位置，并略微降低高度
-                // PICO SDK 的 Quat.toEulerAngles() 返回的是 EulerAngles 对象
-                val euler = hmdPose.rotation.toEulerAngles()
-                
-                // 这里的 euler 是以度为单位（通常是这样），需要转换为弧度
-                val yawRad = Math.toRadians(euler.yaw.toDouble())
-                val pitchRad = Math.toRadians(euler.pitch.toDouble())
-                
-                // 简单的欧拉角转方向向量（Y-up, Z 轴负方向为前向）
-                val forwardX = -kotlin.math.sin(yawRad) * kotlin.math.cos(pitchRad)
-                val forwardY = kotlin.math.sin(pitchRad)
-                val forwardZ = -kotlin.math.cos(yawRad) * kotlin.math.cos(pitchRad)
-                
-                val distance = 0.65f
-                val targetPos = Vector3(
-                    hmdPose.position.x + (forwardX * distance).toFloat(),
-                    hmdPose.position.y + (forwardY * distance).toFloat() - 0.15f,
-                    hmdPose.position.z + (forwardZ * distance).toFloat()
-                )
-                
-                inputEntity.components[TransformComponent::class.java]?.setPosition(targetPos)
+                inputEntity.components[TransformComponent::class.java]?.apply {
+                    setPosition(Vector3(0f, -0.15f, -0.65f))
+                    setQuaternion(Quat.identity())
+                }
             }
 
             attachments.entity("mesh_scan_toggle")?.let { toggleEntity ->
@@ -353,13 +286,14 @@ fun HomeStage() {
                 toggleEntity.components[TransformComponent::class.java]?.setPosition(targetPos)
             }
 
-            // 更新 HMD 位置 - 直接使用追踪数据的世界坐标
+            // 更新 HMD 位置：先转换到 rootEntity 所在坐标系，再驱动其子节点 HUD
             hmdTrackingData.hmdPose.let { pose ->
                 val transformComponent = hmdEntity.components[TransformComponent::class.java]
                 transformComponent?.apply {
-                    // HMD 追踪数据已经是场景世界坐标，直接设置
-                    setPosition(pose.position)
-                    setQuaternion(pose.rotation)
+                    val convertedPosition = rootEntity.convertPositionFrom(pose.position, null)
+                    val convertedRotation = rootEntity.convertRotationFrom(pose.rotation, null)
+                    setPosition(convertedPosition)
+                    setQuaternion(convertedRotation)
                 }
             }
 
@@ -475,9 +409,7 @@ fun HomeStage() {
             
             content.addEntity(rootEntity)
 
-            // HMD 实体直接添加到场景 content 中（不是任何实体的子节点）
-            // 这样 HMD 位置就是绝对世界坐标，与精灵模型在同一坐标系中
-            content.addEntity(hmdEntity)
+            rootEntity.addChild(hmdEntity)
         },
         attachments = {
             // AI 回复对话气泡面板 (关联到 text 附件)

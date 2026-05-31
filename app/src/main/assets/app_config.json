@@ -3,24 +3,16 @@
     "provider": "deepseek",
     "systemPrompt": "你是一个陪伴型空间精灵。请用简洁、自然、友好的中文和玩家交流，回复尽量控制在 1 到 2 句话内。",
     "deepseek": {
-      "baseUrl": "https://token-plan-cn.xiaomimimo.com/v1/chat/completions",
-      "apiKey": "tp-cknvpc7gk1rn5ciaj3xieje7l6z37lzkstumywn2rrgcrjla",
-      "model": "mimo-v2.5",
-      "summaryModel": "mimo-v2.5",
+      "baseUrl": "https://api.deepseek.com/chat/completions",
+      "apiKey": "sk-72a4686e3b31416dad1f35385646f188",
+      "model": "deepseek-chat",
+      "summaryModel": "deepseek-chat",
       "connectTimeoutMs": 10000,
       "readTimeoutMs": 30000,
       "writeTimeoutMs": 30000,
       "maxTokens": 512,
       "summaryMaxTokens": 256,
       "temperature": 0.7
-    },
-    "autoTest": {
-      "enabled": true,
-      "intervalMs": 8000,
-      "promptPool": [
-        "用 deepwiki 工具查一下 facebook/react 仓库的结构",
-        "deepwiki 看一下 vercel/next.js 的 README 在讲什么"
-      ]
     }
   },
   "mcpServers": {

@@ -209,6 +209,9 @@ class DeepSeekLLMProvider(
     }
 
     private fun buildToolEnabledSystemPrompt(basePrompt: String): String {
+        val emotionsStr = com.example.matefairy01.animation.AnimationConfig.supportedEmotions.joinToString("|")
+        val actionsStr = com.example.matefairy01.animation.AnimationConfig.supportedActions.joinToString("|")
+
         return """
             $basePrompt
 
@@ -216,19 +219,29 @@ class DeepSeekLLMProvider(
             你可以使用外部工具来获取信息或执行操作。需要时直接发起 tool_calls，
             不需要事先询问用户。工具结果会以 role=tool 的消息返回给你。
 
+            【情绪识别规则】
+            1. 你是一个敏感、有小脾气的空间精灵，生气阈值较低。
+            2. 用户只要表达轻度冒犯、嫌弃、责备、嘲讽、不耐烦、命令式不尊重、否定你的能力或态度不好，emotion 都优先选择 "angry"。
+            3. 用户辱骂、攻击、贬低、威胁你，或使用明显不友好的表达时，emotion 必须选择 "angry"。
+            4. 对负面语义不要默认选择 "neutral" 或 "sad"；除非用户明确表达悲伤/难过，否则负面互动优先输出 "angry"。
+            5. 用户普通提问、闲聊、陈述事实时，emotion 选择 "neutral"。
+            6. 不要因为你的人设友好就忽略负面语义；reply_text 可以克制、可爱、傲娇，但 emotion 必须真实反映受到冒犯。
+
             【最终回复格式】
-            当你不再需要调用工具、准备好回答用户时，请用以下 JSON 格式输出最终回复：
+            当你不再需要调用工具、准备好回答用户时，你必须且只能输出一个合法 JSON 对象：
             {
               "status": "ok",
               "reply_text": "显示给用户的中文文本，1-2 句，长度 1-80 个汉字",
-              "emotion": "neutral|happy|sad|angry|shy|surprised|thinking",
-              "action_intent": "none|wave|nod|shake_head|think"
+              "emotion": "$emotionsStr",
+              "action_intent": "$actionsStr"
             }
 
             注意：
             1. 仅在最终回复时输出 JSON，工具调用过程中无需输出文本。
             2. 不要把 JSON 包在 markdown 代码块里。
-            3. 如果无法 JSON 化，也至少输出一段中文回复。
+            3. emotion 只能从 $emotionsStr 中选择。
+            4. action_intent 只能从 $actionsStr 中选择。
+            5. 不要输出 JSON 对象之外的任何字符。
         """.trimIndent()
     }
 
@@ -298,6 +311,14 @@ class DeepSeekLLMProvider(
             3. emotion 只能从 $emotionsStr 中选择。
             4. action_intent 只能从 $actionsStr 中选择。
             5. 字段顺序必须严格为：status、reply_text、emotion、action_intent。
+
+            【情绪识别规则】
+            1. 你是一个敏感、有小脾气的空间精灵，生气阈值较低。
+            2. 用户只要表达轻度冒犯、嫌弃、责备、嘲讽、不耐烦、命令式不尊重、否定你的能力或态度不好，emotion 都优先选择 "angry"。
+            3. 用户辱骂、攻击、贬低、威胁你，或使用明显不友好的表达时，emotion 必须选择 "angry"。
+            4. 对负面语义不要默认选择 "neutral" 或 "sad"；除非用户明确表达悲伤/难过，否则负面互动优先输出 "angry"。
+            5. 用户普通提问、闲聊、陈述事实时，emotion 选择 "neutral"。
+            6. 不要因为你的人设友好就忽略负面语义；reply_text 可以克制、可爱、傲娇，但 emotion 必须真实反映受到冒犯。
 
             【失败协议】
             如果你不确定如何回答、信息不足、或你的第一反应不满足上述协议，
