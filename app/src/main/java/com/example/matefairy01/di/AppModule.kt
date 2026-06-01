@@ -26,7 +26,7 @@ object AppModule {
     fun initialize(context: Context) {
         if (runtime != null) return
         val appConfig = AppConfigLoader.load(context.applicationContext)
-        val newRuntime = MateFairyRuntimeFactory.create(appConfig)
+        val newRuntime = MateFairyRuntimeFactory.create(context.applicationContext, appConfig)
         // 把 AvatarController 绑定给行为系统全局桥接对象
         BehaviorRuntimeDependencies.bindAvatarController(newRuntime.avatarController)
         runtime = newRuntime

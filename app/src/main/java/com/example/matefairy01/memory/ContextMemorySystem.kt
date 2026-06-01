@@ -74,8 +74,9 @@ class ContextMemorySystem(
         }
 
         // 3. 当前 query 召回的相关回忆
-        if (!query.isNullOrBlank() && memoryRetriever != null) {
-            val recall = runCatching { memoryRetriever.assembleContext(query) }
+        val retriever = memoryRetriever
+        if (!query.isNullOrBlank() && retriever != null) {
+            val recall = runCatching { retriever.assembleContext(query) }
                 .onFailure { Log.w(TAG, "memory recall failed: ${it.message}") }
                 .getOrDefault("")
             if (recall.isNotBlank()) {

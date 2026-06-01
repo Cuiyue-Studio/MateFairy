@@ -47,7 +47,7 @@ class ConversationOrchestrator(
     private val decisionMaker: BehaviorDecisionMaker = DefaultBehaviorDecisionMaker()
 ) {
     companion object {
-        private const val TAG = "ConvOrchestrator"
+        private const val TAG = "ConversationOrchestrator"
     }
 
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -60,10 +60,6 @@ class ConversationOrchestrator(
 
     @Volatile
     private var accumulatedTokens: Int = 0
-
-    companion object {
-        private const val TAG = "ConversationOrchestrator"
-    }
 
     suspend fun processUserInput(text: String): ConversationResult {
         contextMemorySystem.addMessage(ChatMessage(role = "user", content = text))
