@@ -1,5 +1,6 @@
 package com.example.matefairy01.animation
 
+import android.util.Log
 import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.ecs.resource.AnimationResource
 import kotlinx.coroutines.*
@@ -12,6 +13,10 @@ import kotlinx.coroutines.*
  * 3. 常驻基础层 (Base Idle/Moving): 最低优，永远兜底。
  */
 class AnimationModule : AnimationController {
+    companion object {
+        private const val TAG = "AnimationModule"
+    }
+
     private var skinnedMeshEntity: Entity? = null
     private var animationResources: Array<AnimationResource>? = null
     
@@ -32,6 +37,9 @@ class AnimationModule : AnimationController {
         if (skinnedMeshEntities.isNotEmpty()) {
             this.skinnedMeshEntity = skinnedMeshEntities.first()
             this.animationResources = this.skinnedMeshEntity?.getAnimationResources()
+            Log.d(TAG, "Initialized animation resources: count=${animationResources?.size ?: 0}")
+        } else {
+            Log.w(TAG, "No skinned mesh entity found; animations will not play")
         }
     }
 
@@ -39,8 +47,18 @@ class AnimationModule : AnimationController {
      * 对外提供的通用播放接口，内置优先级与序列队列处理
      */
     override fun playAnimation(animation: FairyAnimation) {
-        val resources = animationResources ?: return
-        if (animation.trackIndex !in resources.indices) return
+        val resources = animationResources
+        if (resources == null) {
+            Log.w(TAG, "Ignore ${animation.animName}: animation resources not initialized")
+            return
+        }
+        if (animation.trackIndex !in resources.indices) {
+            Log.w(
+                TAG,
+                "Ignore ${animation.animName}: trackIndex=${animation.trackIndex}, resources=${resources.size}"
+            )
+            return
+        }
 
         val incomingPriority = animation.type.priority
         val currentPriority = currentPlayingAnim?.type?.priority ?: AnimationPriority.BASE
@@ -78,7 +96,8 @@ class AnimationModule : AnimationController {
         val meshEntity = skinnedMeshEntity ?: return
 
         activeJob?.cancel() // 取消之前的计时器
-        
+
+        Log.d(TAG, "Play ${animation.animName}, type=${animation.type}, trackIndex=${animation.trackIndex}")
         meshEntity.playAnimation(resources[animation.trackIndex])
         currentPlayingAnim = animation
         

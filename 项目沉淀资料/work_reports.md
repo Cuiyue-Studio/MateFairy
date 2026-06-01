@@ -309,3 +309,56 @@
 - Debug 材质使用 `UnlitMaterial.create()`，颜色为半透明绿色，并设置 `PolygonFillMode.LINE`，用于在 Mixed Stage 中直观看到 PICO 扫描出来的空间网格轮廓。
 - 保留原有 `CollisionComponent`，因此线框显示与静态碰撞体共用同一份 `MeshResource`。
 - 已执行 `./gradlew :app:compileDebugKotlin --no-daemon -Dkotlin.compiler.execution.strategy=in-process`，编译通过；`GetDiagnostics` 返回空列表。
+
+
+### Phase 9 补充：精灵物理化（刚体+射线悬浮）
+
+- 移除了 `FairyBehaviorSystem` 中直接修改 `transform.position` 和通过惯性滑行的旧有手动运动学逻辑。
+- 将精灵包装实体（`robotModel`）配置为 `RigidBodyMode.DYNAMIC` 的物理刚体，并添加胶囊碰撞体（`ShapeResource.createCapsule`）。
+- 锁定了精灵刚体的物理旋转（`isRotationLocked = Bool3(true, true, true)`），避免其在碰撞时像布娃娃一样翻滚；并关闭了默认重力（`isAffectedByGravity = false`）。
+- 在 `FairyBehaviorSystem` 中引入了基于 `PhysicsForceComponent` 的受力控制逻辑（PD 控制器）：
+  - 通过计算精灵当前位置与目标位置的差值，并结合线速度（通过位移插值计算 `actualVelocity`）施加三维推力，实现了平滑的追踪与移动。
+  - 在 Y 轴上引入悬浮逻辑（Spring Force），利用 `baseY + floatOffset` 计算悬浮目标，并施加向上的弹簧力。
+  - **射线避障与防穿模（Raycast Suspension）**：向下发射射线检测真实物理地面（或桌面）。如果距离过近（`< 0.4m`），施加额外的悬挂推力，避免精灵因物理碰撞而产生过度抖动。
+
+
+### Phase 9 故障修复：刚体改造后模型变小与疯狂打转
+
+#### 一、问题现象
+
+- 精灵在引入 `RigidBodyComponent + PhysicsForceComponent + RayCast` 后，视觉模型变得非常微小。
+- 精灵在运行时出现持续高速自旋，严重影响可用性。
+
+#### 二、根因分析
+
+1. **视觉模型与物理刚体耦合过深**
+   - 上一版直接把 `RigidBodyComponent`、`CollisionComponent` 和 `PhysicsForceComponent` 挂在承载 GLB 的 Wrapper 实体上。
+   - 该 Wrapper 同时承担视觉层级、动画缩放、行为控制和物理刚体职责，物理系统更新 Transform 后容易干扰 GLB 的缩放/动画层级。
+
+2. **朝向由物理抖动速度驱动**
+   - 上一版使用 `(currentPosition - lastPosition) / dt` 得到的 `actualVelocity` 来计算 yaw。
+   - 物理刚体每帧会产生微小位置抖动，尤其在射线悬浮和阻尼力共同作用下，这些噪声会被 `atan2` 放大成角度跳变，造成疯狂打转。
+
+3. **射线可能命中自身碰撞体**
+   - 向下 RayCast 使用 `COLLISION_GROUP_ALL`，理论上可能先命中精灵自己的胶囊碰撞体。
+   - 若自命中参与悬浮力计算，会产生非预期向上力反馈。
+
+#### 三、修复方案
+
+1. **物理代理与视觉模型分离**
+   - 新增不可见 `robotBody` 实体承载刚体、胶囊碰撞体、力组件和 `FairyBehaviorComponent`。
+   - 原 `robotModel` 只承载 GLB 视觉模型和动画层级，不再挂刚体。
+   - 行为系统每帧将 `robotModel` 的位置与旋转同步到 `robotBody`，从而避免物理系统污染视觉缩放链路。
+
+2. **朝向改为意图驱动**
+   - 移动状态下使用目标方向 `dirX/dirZ` 计算 yaw，不再使用物理速度噪声。
+   - 面向玩家状态仍使用玩家相对方向计算 yaw。
+
+3. **射线过滤自身实体**
+   - 下方射线悬浮只取 `it.entity != fairyEntity` 的命中结果，避免自身碰撞体参与悬浮计算。
+
+#### 四、验证情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin --no-daemon -Dkotlin.compiler.execution.strategy=in-process`
+- 结果：编译通过。
+- IDE 诊断：`GetDiagnostics` 返回空列表。

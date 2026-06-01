@@ -22,8 +22,7 @@ data class AppConfig(
 data class AIConfig(
     val provider: LLMProviderType = LLMProviderType.MOCK,
     val systemPrompt: String = "You are a helpful fairy companion.",
-    val deepseek: DeepSeekConfig = DeepSeekConfig(),
-    val autoTest: AIAutoTestConfig = AIAutoTestConfig()
+    val deepseek: DeepSeekConfig = DeepSeekConfig()
 )
 
 enum class LLMProviderType {
@@ -51,12 +50,6 @@ data class DeepSeekConfig(
     val maxTokens: Int = 512,
     val summaryMaxTokens: Int = 256,
     val temperature: Double = 0.7
-)
-
-data class AIAutoTestConfig(
-    val enabled: Boolean = false,
-    val intervalMs: Long = 3_000L,
-    val promptPool: List<String> = emptyList()
 )
 
 object AppConfigLoader {
@@ -209,8 +202,7 @@ object AppConfigLoader {
         return AIConfig(
             provider = LLMProviderType.fromRaw(json.optString("provider")),
             systemPrompt = json.optString("systemPrompt", AIConfig().systemPrompt),
-            deepseek = parseDeepSeekConfig(json.optJSONObject("deepseek")),
-            autoTest = parseAutoTestConfig(json.optJSONObject("autoTest"))
+            deepseek = parseDeepSeekConfig(json.optJSONObject("deepseek"))
         )
     }
 
@@ -229,17 +221,6 @@ object AppConfigLoader {
             maxTokens = json.optInt("maxTokens", defaults.maxTokens),
             summaryMaxTokens = json.optInt("summaryMaxTokens", defaults.summaryMaxTokens),
             temperature = json.optDouble("temperature", defaults.temperature)
-        )
-    }
-
-    private fun parseAutoTestConfig(json: JSONObject?): AIAutoTestConfig {
-        val defaults = AIAutoTestConfig()
-        if (json == null) return defaults
-
-        return AIAutoTestConfig(
-            enabled = json.optBoolean("enabled", defaults.enabled),
-            intervalMs = json.optLong("intervalMs", defaults.intervalMs),
-            promptPool = json.optJSONArray("promptPool").toStringList()
         )
     }
 

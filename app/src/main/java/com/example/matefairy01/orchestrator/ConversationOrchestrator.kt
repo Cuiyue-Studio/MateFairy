@@ -61,12 +61,20 @@ class ConversationOrchestrator(
     @Volatile
     private var accumulatedTokens: Int = 0
 
+    companion object {
+        private const val TAG = "ConversationOrchestrator"
+    }
+
     suspend fun processUserInput(text: String): ConversationResult {
         contextMemorySystem.addMessage(ChatMessage(role = "user", content = text))
 
         // 改造点：注入 SOUL/USER/recall 到 prompt
         val messages = contextMemorySystem.buildPromptMessages(query = text)
         val response = llmProvider.chat(messages)
+        Log.d(
+            TAG,
+            "LLM response emotion=${response.emotion}, action=${response.action_intent}, reply=${response.reply_text}"
+        )
 
         contextMemorySystem.addMessage(
             ChatMessage(role = "assistant", content = response.reply_text)
@@ -77,6 +85,11 @@ class ConversationOrchestrator(
             emotion = response.emotion,
             actionIntent = response.action_intent,
             originalReply = response.reply_text
+        )
+        Log.d(
+            TAG,
+            "Decision emotion=${decision.resolvedEmotion}, action=${decision.resolvedActionIntent}, " +
+                "triggerEmotion=${decision.shouldTriggerEmotion}, dispatchAction=${decision.shouldDispatchAction}"
         )
 
         // 4. 分发执行
