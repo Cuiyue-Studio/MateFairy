@@ -10,6 +10,13 @@ import com.pico.spatial.core.ecs.simulation.CollisionCastHitMode
 import com.pico.spatial.core.ecs.simulation.CollisionGroup
 import com.pico.spatial.core.math.Vector3
 import com.pico.spatial.core.math.EulerAngles
+import com.example.matefairy01.interaction.FairyActionLockComponent
+import com.example.matefairy01.interaction.InteractionActionRequest
+import com.example.matefairy01.interaction.InteractionActionRuntimeDependencies
+import com.example.matefairy01.interaction.InteractionActionSource
+import com.example.matefairy01.interaction.InteractionEntityResolver
+import com.example.matefairy01.interaction.PlayFootballActionController
+import com.example.matefairy01.interaction.PlayFootballPreconditions
 import kotlin.math.atan2
 import kotlin.math.sqrt
 import kotlin.math.sin
@@ -23,6 +30,7 @@ class FairyBehaviorSystem : System() {
 
     private var cachedHmdEntity: Entity? = null
     private var cachedFairyEntities: List<Entity> = emptyList()
+    private var wasFollowEnabled: Boolean = true
 
     override fun update(context: SceneUpdateContext) {
         val dt = context.deltaTime
@@ -35,6 +43,8 @@ class FairyBehaviorSystem : System() {
 
         val fairyEntities = resolveFairyEntities(context)
         if (fairyEntities.isEmpty()) return
+        val followEnabled = FairyFollowControlModule.isFollowEnabled
+        val followJustRestored = !wasFollowEnabled && followEnabled
 
         for (fairyEntity in fairyEntities) {
             val behavior = fairyEntity.components[FairyBehaviorComponent::class.java]!!
@@ -43,7 +53,22 @@ class FairyBehaviorSystem : System() {
             val visualTransform =
                 behavior.visualEntity?.components?.get(TransformComponent::class.java) ?: transform
 
+            if (
+                fairyEntity.components[FairyActionLockComponent::class.java] != null ||
+                !followEnabled
+            ) {
+                visualTransform.position = transform.position
+                visualTransform.eulerAngles = transform.eulerAngles
+                behavior.lastPosition = transform.position
+                behavior.hasRecordedLastPosition = true
+                continue
+            }
+
             val fairyPos = transform.position
+            updatePlayFootballDistance(context, fairyPos)
+            if (followJustRestored) {
+                reconcileAfterAction(behavior, fairyPos, hmdPos, avatarController)
+            }
 
             // Calculate 3D distance
             val dx = fairyPos.x - hmdPos.x
@@ -90,14 +115,7 @@ class FairyBehaviorSystem : System() {
                     } else {
                         if (behavior.currentTarget == null || hasReachedTarget(fairyPos, behavior.currentTarget!!)) {
                             behavior.state = FairyState.RANDOM_WAITING
-                            val idleAnim = avatarController?.requestIdleAnimation()
-                            if (idleAnim != null) {
-                                behavior.isWaitingForAnimation = true
-                                behavior.waitTimer = idleAnim.durationMs / 1000f
-                            } else {
-                                behavior.isWaitingForAnimation = false
-                                behavior.waitTimer = Random.nextFloat() * 2f + 1f
-                            }
+                            scheduleRandomRestBehavior(context, behavior, avatarController, fairyPos)
                             behavior.baseY = transform.position.y
                         }
                     }
@@ -135,11 +153,7 @@ class FairyBehaviorSystem : System() {
                         behavior.waitTimer = 0f
                         behavior.baseY = transform.position.y
 
-                        val idleAnim = avatarController?.requestIdleAnimation()
-                        if (idleAnim != null) {
-                            behavior.isWaitingForAnimation = true
-                            behavior.waitTimer = idleAnim.durationMs / 1000f
-                        }
+                        scheduleRandomRestBehavior(context, behavior, avatarController, fairyPos)
                     }
                 }
             }
@@ -254,6 +268,7 @@ class FairyBehaviorSystem : System() {
             val roll = if (behavior.hasRecordedInitialRotation) behavior.initialRoll else 0f
             visualTransform.eulerAngles = EulerAngles(pitch = pitch, yaw = behavior.currentYaw, roll = roll)
         }
+        wasFollowEnabled = followEnabled
     }
 
     private fun getRandomTargetInInnerRadius(hmdPos: Vector3, innerRadius: Float, hoverHeight: Float, zDeviationRange: Float): Vector3 {
@@ -282,6 +297,99 @@ class FairyBehaviorSystem : System() {
 
     private fun Float.toDegrees() = this * 180f / Math.PI.toFloat()
 
+    private fun scheduleRandomRestBehavior(
+        context: SceneUpdateContext,
+        behavior: FairyBehaviorComponent,
+        avatarController: com.example.matefairy01.avatar.AvatarController?,
+        fairyPos: Vector3
+    ) {
+        if (tryScheduleRandomPlayFootball(context, fairyPos)) {
+            behavior.isWaitingForAnimation = false
+            behavior.waitTimer = RANDOM_ACTION_MIN_WAIT_SECONDS
+            return
+        }
+
+        val idleAnim = avatarController?.requestIdleAnimation()
+        if (idleAnim != null) {
+            behavior.isWaitingForAnimation = true
+            behavior.waitTimer = idleAnim.durationMs / 1000f
+        } else {
+            behavior.isWaitingForAnimation = false
+            behavior.waitTimer = Random.nextFloat() * 2f + 1f
+        }
+    }
+
+    private fun tryScheduleRandomPlayFootball(context: SceneUpdateContext, fairyPos: Vector3): Boolean {
+        if (InteractionActionRuntimeDependencies.lockState.isLocked) return false
+        if (Random.nextFloat() > RANDOM_PLAY_FOOTBALL_CHANCE) return false
+        val football = InteractionEntityResolver.findObject(context.scene, "football") ?: return false
+        val footballTransform = football.components[TransformComponent::class.java] ?: return false
+        val footballDistance = horizontalDistance(fairyPos, footballTransform.position)
+        PlayFootballPreconditions.updateHorizontalDistance(footballDistance)
+        if (footballDistance > PlayFootballPreconditions.MAX_HORIZONTAL_DISTANCE_METERS) {
+            return false
+        }
+
+        return InteractionActionRuntimeDependencies.requestBus.enqueue(
+            InteractionActionRequest(
+                actionId = PlayFootballActionController.ACTION_ID,
+                objectIds = listOf("football"),
+                source = InteractionActionSource.RANDOM
+            )
+        )
+    }
+
+    private fun updatePlayFootballDistance(context: SceneUpdateContext, fairyPos: Vector3) {
+        val football = InteractionEntityResolver.findObject(context.scene, "football")
+        val footballTransform = football?.components?.get(TransformComponent::class.java)
+        if (footballTransform == null) {
+            PlayFootballPreconditions.clear()
+            return
+        }
+        PlayFootballPreconditions.updateHorizontalDistance(
+            horizontalDistance(fairyPos, footballTransform.position)
+        )
+    }
+
+    private fun reconcileAfterAction(
+        behavior: FairyBehaviorComponent,
+        fairyPos: Vector3,
+        hmdPos: Vector3,
+        avatarController: com.example.matefairy01.avatar.AvatarController?
+    ) {
+        behavior.lastPosition = fairyPos
+        behavior.hasRecordedLastPosition = true
+        behavior.baseY = fairyPos.y
+        behavior.waitTimer = 0f
+        behavior.isWaitingForAnimation = false
+
+        val distance2D = horizontalDistance(fairyPos, hmdPos)
+        if (distance2D > behavior.outerRadius) {
+            behavior.state = FairyState.FOLLOWING
+            behavior.currentTarget = getRandomTargetInInnerRadius(
+                hmdPos,
+                behavior.innerRadius,
+                behavior.hoverHeight,
+                behavior.zDeviationRange
+            )
+            avatarController?.requestMovingAnimation()
+        } else {
+            behavior.state = FairyState.RANDOM_MOVING
+            behavior.currentTarget = getRandomTargetInInnerRadius(
+                hmdPos,
+                behavior.innerRadius,
+                behavior.hoverHeight,
+                behavior.zDeviationRange
+            )
+        }
+    }
+
+    private fun horizontalDistance(a: Vector3, b: Vector3): Float {
+        val dx = a.x - b.x
+        val dz = a.z - b.z
+        return sqrt(dx * dx + dz * dz)
+    }
+
     private fun resolveHmdEntity(context: SceneUpdateContext): Entity? {
         val cached = cachedHmdEntity
         if (cached != null &&
@@ -307,5 +415,10 @@ class FairyBehaviorSystem : System() {
     private fun isUsableFairyEntity(entity: Entity): Boolean {
         return entity.components[FairyBehaviorComponent::class.java] != null &&
             entity.components[TransformComponent::class.java] != null
+    }
+
+    private companion object {
+        private const val RANDOM_PLAY_FOOTBALL_CHANCE = 0.18f
+        private const val RANDOM_ACTION_MIN_WAIT_SECONDS = 1.5f
     }
 }

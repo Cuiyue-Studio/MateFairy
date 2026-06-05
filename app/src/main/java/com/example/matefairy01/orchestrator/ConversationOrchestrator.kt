@@ -1,6 +1,5 @@
 package com.example.matefairy01.orchestrator
 
-import android.util.Log
 import com.example.matefairy01.ai.ChatMessage
 import com.example.matefairy01.ai.ILLMProvider
 import com.example.matefairy01.memory.ContextMemorySystem
@@ -8,8 +7,6 @@ import com.example.matefairy01.orchestrator.decision.BehaviorDecisionMaker
 import com.example.matefairy01.orchestrator.decision.DefaultBehaviorDecisionMaker
 import com.example.matefairy01.orchestrator.ports.ActionCommandPort
 import com.example.matefairy01.orchestrator.ports.EmotionCommandPort
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
 
 data class ConversationResult(
     val replyText: String
@@ -27,19 +24,11 @@ class ConversationOrchestrator(
     private val actionPort: ActionCommandPort,
     private val decisionMaker: BehaviorDecisionMaker = DefaultBehaviorDecisionMaker()
 ) {
-    companion object {
-        private const val TAG = "ConversationOrchestrator"
-    }
-
     suspend fun processUserInput(text: String): ConversationResult {
         contextMemorySystem.addMessage(ChatMessage(role = "user", content = text))
 
         val messages = contextMemorySystem.buildPromptMessages()
         val response = llmProvider.chat(messages)
-        Log.d(
-            TAG,
-            "LLM response emotion=${response.emotion}, action=${response.action_intent}, reply=${response.reply_text}"
-        )
 
         contextMemorySystem.addMessage(
             ChatMessage(role = "assistant", content = response.reply_text)
@@ -51,11 +40,6 @@ class ConversationOrchestrator(
             actionIntent = response.action_intent,
             originalReply = response.reply_text
         )
-        Log.d(
-            TAG,
-            "Decision emotion=${decision.resolvedEmotion}, action=${decision.resolvedActionIntent}, " +
-                "triggerEmotion=${decision.shouldTriggerEmotion}, dispatchAction=${decision.shouldDispatchAction}"
-        )
 
         // 4. 分发执行
         if (decision.shouldTriggerEmotion) {
@@ -63,16 +47,14 @@ class ConversationOrchestrator(
             emotionPort.triggerEmotion(decision.resolvedEmotion)
         }
 
-        if (decision.shouldDispatchAction) {
-            // 采用 coroutineScope 启动子协程分发动作，避免长动画挂起阻塞当前函数返回，
-            // 从而让 reply_text 能够立刻抛出并显示给用户。
-            coroutineScope {
-                launch {
-                    actionPort.dispatchAction(decision.resolvedActionIntent)
-                }
-            }
+        val actionReplyOverride = if (decision.shouldDispatchAction) {
+            actionPort.dispatchAction(decision.resolvedActionIntent).replyOverride
+        } else {
+            null
         }
 
-        return ConversationResult(replyText = decision.overriddenReplyText ?: response.reply_text)
+        return ConversationResult(
+            replyText = actionReplyOverride ?: decision.overriddenReplyText ?: response.reply_text
+        )
     }
 }

@@ -2,6 +2,7 @@ package com.example.matefairy01.content
 
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -27,6 +28,9 @@ import com.example.matefairy01.behavior.HMDTagComponent
 import com.example.matefairy01.config.AppConfigLoader
 import com.example.matefairy01.input.HandClapDetector
 import com.example.matefairy01.input.InputControllerManager
+import com.example.matefairy01.interaction.InteractionActionSystem
+import com.example.matefairy01.interaction.InteractionActorComponent
+import com.example.matefairy01.interaction.InteractionObjectComponent
 import com.example.matefairy01.perception.SpatialMeshManager
 import com.example.matefairy01.runtime.MateFairyRuntime
 import com.example.matefairy01.runtime.MateFairyRuntimeFactory
@@ -35,11 +39,14 @@ import com.example.matefairy01.ui.GameUIContainer
 import com.example.matefairy01.ui.SharedUIManager
 import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.ecs.LookAtComponent
-import com.pico.spatial.core.ecs.resource.AssetBundle
 import com.pico.spatial.core.ecs.TransformComponent
 import com.pico.spatial.core.ecs.PhysicsWorldComponent
 import com.pico.spatial.core.ecs.PhysicsForceComponent
+import com.pico.spatial.core.ecs.PhysicsVelocityComponent
 import com.pico.spatial.core.ecs.RigidBodyComponent
+import com.pico.spatial.core.ecs.simulation.CollisionDetectionMode
+import com.pico.spatial.core.ecs.simulation.CollisionFilter
+import com.pico.spatial.core.ecs.simulation.CollisionInfoDetailLevel
 import com.pico.spatial.core.ecs.simulation.RigidBodyMode
 import com.pico.spatial.core.ecs.CollisionComponent
 import com.pico.spatial.core.ecs.simulation.CollisionResponseMode
@@ -53,11 +60,12 @@ import com.pico.spatial.tracking.hand.HandTrackingProvider
 import com.pico.spatial.tracking.hmd.HMDPose
 import com.pico.spatial.tracking.hmd.HMDTrackingData
 import com.pico.spatial.tracking.hmd.HMDTrackingProvider
+import androidx.compose.ui.input.pointer.pointerInput
+import com.pico.spatial.ui.foundation.gesture.detectSpatialTapGesture
+import com.pico.spatial.ui.foundation.gesture.TargetEntity
 import com.pico.spatial.ui.foundation.content.SpatialView
 import com.pico.spatial.ui.foundation.dsl.registerSystem
 import com.pico.spatial.ui.foundation.dsl.unregisterSystem
-import com.pico.spatial.ui.design.Button
-import com.pico.spatial.ui.design.Text
 import com.pico.spatial.ui.platform.meters
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -75,7 +83,8 @@ private class HomeStageRuntimeState {
     var loadedRobotModelEntity: Entity? = null
     var dialogueAttachmentEntity: Entity? = null
     var userInputAttachmentEntity: Entity? = null
-    var meshScanToggleAttachmentEntity: Entity? = null
+    var editorSceneEntity: Entity? = null
+    var footballEntity: Entity? = null
 }
 
 const val DEFAULT_TEST_DIALOGUE_TEXT = "你好！我是你的MateFairy。"
@@ -88,7 +97,6 @@ fun HomeStage() {
     val rootEntity = remember { Entity().apply { components.set(PhysicsWorldComponent(Vector3(0f, -9.81f, 0f))) } }
     val hmdEntity = remember { Entity().apply { components.set(HMDTagComponent()) } }
     val spatialMeshManager = remember { SpatialMeshManager(mainHandler) }
-    var isMeshScanningEnabled by remember { mutableStateOf(false) }
 
     // 追踪数据提供者
     val hmdTrackingProvider = remember { HMDTrackingProvider() }
@@ -105,7 +113,7 @@ fun HomeStage() {
     val appConfig = remember(context) { AppConfigLoader.load(context) }
     val textInputProvider = SharedUIManager.textInputProvider
     val voiceInputProvider = SharedUIManager.voiceInputProvider
-    val runtime = remember(appConfig) { MateFairyRuntimeFactory.create(appConfig) }
+    val runtime = remember(appConfig) { MateFairyRuntimeFactory.create(appConfig, context.applicationContext) }
 
     // AI 对话状态
     var dialogueText by remember { mutableStateOf("") }
@@ -208,6 +216,8 @@ fun HomeStage() {
         controllerTrackingProvider.start()
         handTrackingProvider.start()
         registerSystem<FairyBehaviorSystem>()
+        registerSystem<InteractionActionSystem>()
+        registerSystem<FootballPhysicsActivationSystem>()
 
         val handTrackingJob = scope.launch {
             handTrackingProvider.dataFlow.collect { trackingData ->
@@ -217,6 +227,8 @@ fun HomeStage() {
 
         onDispose {
             handTrackingJob.cancel()
+            unregisterSystem<FootballPhysicsActivationSystem>()
+            unregisterSystem<InteractionActionSystem>()
             unregisterSystem<FairyBehaviorSystem>()
             hmdTrackingProvider.stop()
             controllerTrackingProvider.removeControllerActionListener(controllerListener)
@@ -229,7 +241,21 @@ fun HomeStage() {
     }
 
     SpatialView(
-        modifier = Modifier.requiredSize(10.meters),
+        modifier = Modifier.requiredSize(10.meters)
+            .pointerInput(runtimeState.footballEntity) {
+                val football = runtimeState.footballEntity
+                if (football != null) {
+                    detectSpatialTapGesture(
+                        context = context,
+                        targetedToEntity = TargetEntity.any { entity -> entity == football }
+                    ) {
+                        // 给足球施加一个弹飞的速度（向上和向后）
+                        val velocityComp = football.components[com.pico.spatial.core.ecs.PhysicsVelocityComponent::class.java] 
+                            ?: com.pico.spatial.core.ecs.PhysicsVelocityComponent().also { football.components.set(it) }
+                        velocityComp.linearVelocity = Vector3(0f, 3.0f, -3.0f)
+                    }
+                }
+            },
         update = { content, attachments ->
             // 必须在 update 中保证所有的 Attachments 被添加到场景中
             // 因为 Compose 附件的生命周期独立于 3D 渲染，只有挂载后 SDK 才能进行深度计算和渲染
@@ -261,38 +287,6 @@ fun HomeStage() {
                     setPosition(Vector3(0f, -0.15f, -0.65f))
                     setQuaternion(Quat.identity())
                 }
-            }
-
-            attachments.entity("mesh_scan_toggle")?.let { toggleEntity ->
-                if (runtimeState.meshScanToggleAttachmentEntity != toggleEntity) {
-                    runtimeState.meshScanToggleAttachmentEntity = toggleEntity
-                    if (toggleEntity.components[TransformComponent::class.java] == null) {
-                        toggleEntity.components[TransformComponent::class.java] = TransformComponent()
-                    }
-                    if (toggleEntity.components[LookAtComponent::class.java] == null) {
-                        toggleEntity.components[LookAtComponent::class.java] = LookAtComponent().apply {
-                            setViewerAsTarget()
-                            alignLocalUpToWorldUp = true
-                        }
-                    }
-                    content.addEntity(toggleEntity)
-                }
-
-                val hmdPose = hmdTrackingData.hmdPose
-                val euler = hmdPose.rotation.toEulerAngles()
-                val yawRad = Math.toRadians(euler.yaw.toDouble())
-                val pitchRad = Math.toRadians(euler.pitch.toDouble())
-                val forwardX = -kotlin.math.sin(yawRad) * kotlin.math.cos(pitchRad)
-                val forwardY = kotlin.math.sin(pitchRad)
-                val forwardZ = -kotlin.math.cos(yawRad) * kotlin.math.cos(pitchRad)
-                val distance = 0.95f
-                val targetPos = Vector3(
-                    hmdPose.position.x + (forwardX * distance).toFloat(),
-                    hmdPose.position.y + (forwardY * distance).toFloat() - 0.35f,
-                    hmdPose.position.z + (forwardZ * distance).toFloat()
-                )
-
-                toggleEntity.components[TransformComponent::class.java]?.setPosition(targetPos)
             }
 
             // 更新 HMD 位置：先转换到 rootEntity 所在坐标系，再驱动其子节点 HUD
@@ -330,25 +324,42 @@ fun HomeStage() {
 
             val (bundle, glbRoot) = coroutineScope {
                 val bundleDeferred = async(Dispatchers.IO) {
-                    AssetBundle.load("asset://editor-asset.bundle")
+                    com.pico.spatial.core.ecs.resource.AssetBundle.load("asset://editor-asset.bundle")
                 }
                 val glbDeferred = async(Dispatchers.IO) {
                     Entity.load("asset://pico_robot_animated.glb")
                 }
                 bundleDeferred.await() to glbDeferred.await()
             }
-            val model = Entity.loadSuspend(modelName = "MyScene", bundle = bundle)
+            val model = Entity()
+
+            // 加载 Editor 里排好的场景
+            val sceneModel = Entity.loadSuspend(modelName = "MyScene", bundle = bundle)
+            runtimeState.editorSceneEntity = sceneModel
+            val editorOcclusionMaterial = runCatching {
+                bundle.loadMaterial(OCCLUSION_MATERIAL_PATH)
+            }.onSuccess {
+                Log.i(HOME_STAGE_TAG, "Loaded occlusion material: $OCCLUSION_MATERIAL_PATH")
+            }.onFailure {
+                Log.w(
+                    HOME_STAGE_TAG,
+                    "Occlusion material not found: $OCCLUSION_MATERIAL_PATH; fallback material will not reliably occlude passthrough",
+                    it
+                )
+            }.getOrNull()
+            spatialMeshManager.setOcclusionMaterial(editorOcclusionMaterial)
+            
+            val football = sceneModel.findEntity("Football")
+            runtimeState.footballEntity = football
+            football?.let {
+                it.components.set(InteractionObjectComponent(objectId = "football", tags = setOf("sports", "physics")))
+                configureFootballPhysics(it)
+            }
 
             model.apply {
-                components[TransformComponent::class.java]?.apply {
+                components[TransformComponent::class.java] = TransformComponent().apply {
                     setPosition(Vector3(0f, 0f, 0f))
                 }
-
-                findEntity("Sky_Sphere")?.destroy()
-                findEntity("box")?.destroy()
-
-                // 移除旧的静态/USDZ模型
-                findEntity("Toy_Robot_2_Anim")?.destroy()
 
                 // 关键修复：GLB 根节点自带 scale=0.01，且骨骼动画在子节点上播放。
                 // 如果直接对根节点设置 scale=0.0045，会覆盖默认的 0.01，导致 SDK 的
@@ -430,6 +441,7 @@ fun HomeStage() {
                     }
 
                     components.set(behaviorComponent)
+                    components.set(InteractionActorComponent())
                 }
 
                 // 初始化动画模块（传入 GLB 根节点，以便查找 SkinnedMeshEntity）
@@ -442,7 +454,8 @@ fun HomeStage() {
                 rootEntity.addChild(this)
             }
 
-            bundle.close()
+            // 将 Editor 里编辑好的整个场景加到现实房间的中心（原点）
+            rootEntity.addChild(sceneModel)
 
             // 设置对话文本附件位置（精灵头顶）
             // 在 SDK 新版本中，不再需要在 initial 中预挂载 attachments，
@@ -451,6 +464,10 @@ fun HomeStage() {
             content.addEntity(rootEntity)
 
             rootEntity.addChild(hmdEntity)
+            spatialMeshManager.start(rootEntity)
+            
+            // 释放 bundle
+            bundle.close()
         },
         attachments = {
             // AI 回复对话气泡面板 (关联到 text 附件)
@@ -474,32 +491,43 @@ fun HomeStage() {
                     GameUIContainer()
                 }
             }
-
-            AttachmentPanel(id = "mesh_scan_toggle") {
-                Box(
-                    modifier = Modifier
-                        .size(360.dp, 120.dp)
-                        .background(Color.Transparent),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Button(
-                        onClick = {
-                            val nextEnabled = !isMeshScanningEnabled
-                            isMeshScanningEnabled = nextEnabled
-                            if (nextEnabled) {
-                                spatialMeshManager.start(rootEntity)
-                            } else {
-                                spatialMeshManager.stop(clearMeshes = true)
-                            }
-                        }
-                    ) {
-                        Text(if (isMeshScanningEnabled) "关闭空间扫描" else "开启空间扫描")
-                    }
-                }
-            }
         }
     )
 }
+
+private fun configureFootballPhysics(football: Entity) {
+    val existingCollision = football.components[CollisionComponent::class.java]
+    val shapes = existingCollision?.collisionShape?.takeIf { it.isNotEmpty() }
+        ?: listOf(ShapeResource.createSphere(FOOTBALL_COLLIDER_RADIUS))
+
+    football.components.set(
+        CollisionComponent(
+            collisionShape = shapes,
+            physicsMaterial = PhysicsMaterialResource(),
+            collisionResponseMode = CollisionResponseMode.COLLIDER_FULL,
+            collisionFilter = CollisionFilter.COLLISION_FILTER_DEFAULT,
+            collisionInfoDetailLevel = CollisionInfoDetailLevel.BRIEF
+        )
+    )
+
+    val rigidBody = football.components[RigidBodyComponent::class.java] ?: RigidBodyComponent()
+    rigidBody.apply {
+        rigidBodyMode = RigidBodyMode.DYNAMIC
+        isAffectedByGravity = false
+        collisionDetectionMode = CollisionDetectionMode.CONTINUOUS
+        linearDamping = 0.2f
+        angularDamping = 0.2f
+    }
+    football.components.set(rigidBody)
+
+    football.components.set(
+        FootballPhysicsActivationComponent(radius = FOOTBALL_COLLIDER_RADIUS)
+    )
+}
+
+private const val FOOTBALL_COLLIDER_RADIUS = 0.11f
+private const val OCCLUSION_MATERIAL_PATH = "MyScene/Root/MyMaterials/OcclusionMaterial"
+private const val HOME_STAGE_TAG = "HomeStage"
 
 /**
  * 处理用户输入并调用 AI

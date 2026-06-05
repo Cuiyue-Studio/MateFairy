@@ -23,11 +23,11 @@ class FairyBehaviorComponent(
     var currentTarget: Vector3? = null
     var waitTimer: Float = 0f
     var isWaitingForAnimation: Boolean = false // 是否正在等待静止时动画播放完毕
+    var visualEntity: Entity? = null
+    var lastPosition: Vector3 = Vector3.ZERO
+    var hasRecordedLastPosition: Boolean = false
     
     var velocity: Vector3 = Vector3(0f, 0f, 0f)
-    var lastPosition: Vector3 = Vector3(0f, 0f, 0f)
-    var hasRecordedLastPosition: Boolean = false
-    var visualEntity: Entity? = null
     var currentYaw: Float = 0f
     
     // Initial rotation from the model's USD transform (to keep the robot standing upright)

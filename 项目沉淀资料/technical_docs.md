@@ -1,7 +1,7 @@
 # MateFairy01 技术文档总览
 
 > 本文档汇总了项目各阶段的技术交接与架构设计文档，用于帮助后续开发人员或 Agent 快速理解项目技术细节与接口约定。
-> 最后更新：2026-05-26
+> 最后更新：2026-06-05
 
 ---
 
@@ -599,3 +599,463 @@ val floorHit = raycastDown.results.firstOrNull { it.entity != fairyEntity }
 ```
 
 该过滤避免下方射线命中精灵自己的胶囊碰撞体，从而避免错误悬浮力反馈。
+
+
+### Phase 9 补充技术说明：持续空间扫描模式
+
+当前空间扫描模式已从“手动按钮开关”调整为“Stage 初始化后自动持续开启”。核心调用位于 `HomeStage.kt` 的 `SpatialView.initial`：
+
+```kotlin
+content.addEntity(rootEntity)
+rootEntity.addChild(hmdEntity)
+spatialMeshManager.start(rootEntity)
+```
+
+生命周期释放仍由 `DisposableEffect.onDispose` 统一处理：
+
+```kotlin
+spatialMeshManager.dispose()
+```
+
+`SpatialMeshManager` 当前只负责生成不可见的环境碰撞体：
+
+```kotlin
+val mesh = MeshResource.loadFromMeshAnchor(anchor.anchorUUID)
+val shape = ShapeResource.createStaticMesh(mesh)
+components.set(
+    CollisionComponent(
+        collisionShape = listOf(shape),
+        physicsMaterial = PhysicsMaterialResource(),
+        collisionResponseMode = CollisionResponseMode.COLLIDER_FULL,
+        collisionFilter = CollisionFilter.COLLISION_FILTER_DEFAULT,
+        collisionInfoDetailLevel = CollisionInfoDetailLevel.BRIEF
+    )
+)
+```
+
+已移除内容：
+- `AttachmentPanel(id = "mesh_scan_toggle")`
+- `Button` / `Text` 相关 UI 控制
+- `ModelComponent(mesh, debugMaterial)`
+- `UnlitMaterial`、`PolygonFillMode.LINE`、`Color4` Debug 线框材质
+
+注意：持续扫描用于验证“精灵持续感知并与现实网格交互”的体验，但它不是最终性能最优方案。正式探索模式仍建议后续增加动态扫描控制和网格区块卸载。
+
+
+### Phase 9 补充技术说明：Spatial Gesture 与物理冲量 API 修正
+
+本次排查发现，PICO Spatial SDK 0.11.7 中空间手势 API 的实际包路径为：
+
+```kotlin
+import com.pico.spatial.ui.foundation.gesture.detectSpatialTapGesture
+import com.pico.spatial.ui.foundation.gesture.TargetEntity
+```
+
+`detectSpatialTapGesture` 的调用需要传入 Android `Context`：
+
+```kotlin
+detectSpatialTapGesture(
+    context = context,
+    targetedToEntity = TargetEntity.any { entity -> entity == football }
+) {
+    // on tap
+}
+```
+
+物理组件注意事项：
+
+- `PhysicsForceComponent` 是持续力/持续扭矩组件，只提供 `force` 和 `torque`。
+- SDK 中不存在 `PhysicsForceComponent.addImpulse()`。
+- 对“点击后给物体一个瞬时速度/冲量”这类交互，应使用 `PhysicsVelocityComponent`：
+
+```kotlin
+val velocityComp = football.components[PhysicsVelocityComponent::class.java]
+    ?: PhysicsVelocityComponent().also { football.components.set(it) }
+velocityComp.linearVelocity = Vector3(0f, 3.0f, -3.0f)
+```
+
+后续如果需要更真实的“按点击方向踢球”，应根据 tap 命中点、HMD/手柄方向计算 `linearVelocity` 向量，而不是固定使用 `Vector3(0f, 3.0f, -3.0f)`。
+
+---
+
+## Phase 10 技术交接：精灵与虚拟物体 Interaction Action 架构
+
+### 1. 阶段概述
+
+本阶段新增一套独立于旧 `ActionRegistry/IActionHandler` 的 ECS 交互 action 基建，用于描述“主体主动交互一个或多个客体”的持续行为。旧 action registry 继续负责 LLM 意图入口，新 interaction 模块负责场景实体解析、持续调度、运动接管和物理交互。
+
+### 2. 核心架构与类说明
+
+- `InteractionActorComponent`：挂在 action 主体实体上，默认 `actorId = "fairy"`，当前绑定到精灵物理代理实体。
+- `InteractionObjectComponent`：挂在 action 客体实体上，当前 `Football` 被标记为 `objectId = "football"`。
+- `FairyActionLockComponent`：action 执行期间挂在精灵主体上，通知 `FairyBehaviorSystem` 暂停常驻巡航/跟随力控制。
+- `InteractionActionRequest`：一次 action 请求，包含 `actionId`、`controllerId`、`subjectId`、`objectIds` 和自由参数 `params`。
+- `InteractionActionController`：controller 工厂接口，一个 controller 对应一种 action，负责创建独立的 `InteractionActionInstance`。
+- `InteractionActionInstance`：实际持续执行的 action 实例，每帧由 `InteractionActionSystem.update()` 驱动，返回 `RUNNING/COMPLETED/FAILED`。
+- `InteractionActionRequestBus`：旧 action registry 与 ECS action 系统之间的轻量请求总线。
+- `SceneInteractionActionHandler`：将 LLM 输出的 `play-football` intent 转换为 `InteractionActionRequest`，避免旧 action 层直接持有场景实体引用。
+
+### 3. play-football 链路
+
+1. LLM 或业务层 dispatch `play-football`。
+2. `SceneInteractionActionHandler` 向 `InteractionActionRequestBus` 写入请求。
+3. `InteractionActionSystem` drain 请求，根据 `InteractionActionRegistry` 找到 `PlayFootballActionController` 并创建实例。
+4. `PlayFootballActionInstance` 解析主体 `fairy` 与客体 `football`。
+5. 实例给精灵主体添加 `FairyActionLockComponent`，常驻 `FairyBehaviorSystem` 检测到锁后不再写跟随/巡航力。
+6. action 计算足球位置，驱动精灵飞到足球旁边，并让精灵面向足球。
+7. 到达接近半径后，action 根据精灵朝向生成踢球方向，yaw 偏移被限制在 `maxKickFanAngleDegrees` 扇面内。
+8. action 通过 `PhysicsVelocityComponent.linearVelocity` 给足球设置一次性初速度，并将踢球速度裁剪到 `minKickSpeed..maxKickSpeed`。
+9. 后续预留：在踢球触发点接入 Action 类动画调度器，传入 `KICK_FOOTBALL` 等枚举播放踢球动画。
+
+### 4. 关键代码示例
+
+```kotlin
+InteractionActionRuntimeDependencies.requestBus.enqueue(
+    InteractionActionRequest(
+        actionId = PlayFootballActionController.ACTION_ID,
+        subjectId = "fairy",
+        objectIds = listOf("football"),
+        params = mapOf(
+            "kickSpeed" to 1.8f,
+            "kickYawOffsetDegrees" to 10f,
+            "maxKickFanAngleDegrees" to 25f
+        )
+    )
+)
+```
+
+### 5. SDK/框架避坑指南
+
+- 精灵视觉模型和物理代理仍保持分离，action 应优先控制物理代理实体，视觉模型由行为系统/锁定同步逻辑跟随。
+- 复杂 action 必须通过 `FairyActionLockComponent` 与常驻行为系统仲裁，否则多个系统会同时写 `PhysicsForceComponent.force`，导致精灵运动抖动或动作失效。
+- 足球应继续保留 `RigidBodyMode.DYNAMIC`、`CollisionResponseMode.COLLIDER_FULL` 和 `CollisionDetectionMode.CONTINUOUS`，否则踢球速度较大时仍可能穿透薄空间网格。
+- 当前踢球使用一次性速度而不是持续 force，原因是持续 `PhysicsForceComponent` 需要额外生命周期管理，容易产生残留力导致足球持续加速。
+
+### 6. 后续扩展约定
+
+- 新增复杂交互时，新建一个 `InteractionActionController`，并在 `MateFairyRuntimeFactory` 注册到 `InteractionActionRuntimeDependencies.actionRegistry`。
+- 新增客体时，在实体初始化处挂 `InteractionObjectComponent(objectId = "xxx")`，action 内通过 objectId 解耦实体查找。
+- 当 Action 类动画调度器落地后，建议新增 `TASK_ACTION` 或专用 `ACTION` 优先级层，并在 `PlayFootballActionController` 的 TODO 位置调用踢球动画。
+
+---
+
+## Phase 11 技术交接：Action 触发条件、锁定与优先级调度
+
+### 1. 阶段概述
+
+本阶段为 `play-football` 补齐两类触发条件：精灵随机触发和对话语义触发。同时新增全局 action 锁与生命周期监听器，保证 action 运行期间不会被随机动画、对话动作动画或情绪动画打断。
+
+### 2. 核心新增机制
+
+- `InteractionActionSource`：区分 action 来源，当前包含 `RANDOM` 和 `DIALOGUE`。
+- `InteractionActionListener`：action 生命周期监听器，包含 `onActionStarted()` 与 `onActionFinished()`。
+- `InteractionActionLockState`：全局 action 锁，记录当前 `actionId/controllerId/source`，并在开始/结束时通知监听器。
+- `InteractionActionRequestBus.enqueue()`：返回 `Boolean`，锁定期间直接拒绝新 action 入队。
+- `InteractionActionSystem`：启动 action 前调用 `tryLock()`，结束或失败时调用 `release()`，这是之后所有 action controller 的统一生命周期出口。
+
+### 3. 动画锁定逻辑
+
+`AnimationModule` 实现 `InteractionActionListener`：
+
+1. action 开始时调用 `stopAllAnimations()`，停止当前正在播放的随机/动作/情绪动画。
+2. `playAnimation()` 开头检查 `InteractionActionRuntimeDependencies.lockState.isLocked`。
+3. 如果 action 锁存在，直接忽略播放请求。
+4. action 结束后由 `InteractionActionSystem` 发出结束信号，锁释放，后续动画请求恢复。
+
+### 4. 随机触发逻辑
+
+`FairyBehaviorSystem` 的随机休息调度入口变为：
+
+1. 精灵随机移动到目标点，进入 `RANDOM_WAITING`。
+2. 或者精灵跟随玩家结束，进入 `FOLLOW_HOVERING`。
+3. 调用 `scheduleRandomRestBehavior()`。
+4. 优先执行 `tryScheduleRandomPlayFootball()`：要求当前无 action 锁、场景中存在 `football`，并命中 `RANDOM_PLAY_FOOTBALL_CHANCE` 概率。
+5. 若随机 action 未触发，才调用 `avatarController.requestIdleAnimation()` 播放随机 idle 动画。
+
+### 5. 对话触发优先级
+
+`DefaultBehaviorDecisionMaker` 当前规则：
+
+- 如果 `emotion` 是 `angry/sad`，拦截所有 action，只触发负面情绪。
+- 如果 `action_intent` 是 `play-football`，且不是负面情绪，则只分发 action，不触发普通情绪动画。
+- 其它普通动作保持原有逻辑，可与普通情绪并行。
+
+示例行为：
+
+- “给我一边跳舞一边踢球” → LLM 应输出 `action_intent = play-football`，决策层只执行踢球 action。
+- “你个废物，给我一边跳舞一边踢球吧” → LLM 输出 `emotion = angry`，决策层拦截 action，只播放 mad/angry 动画。
+- action 正在执行期间继续对话 → 文本可正常返回，但所有动画播放请求都会被 `AnimationModule` 忽略。
+
+### 6. Prompt 约定
+
+`DeepSeekLLMProvider` 的结构化 prompt 已加入规则：
+
+- 用户要求“踢球”“玩足球”“去碰/踢 Football”时，即使同时要求跳舞、挥手，`action_intent` 也必须输出 `play-football`。
+- 用户同时表达辱骂、贬低、攻击等负面冒犯时，`emotion` 必须输出 `angry`，`action_intent` 可继续识别为 `play-football`，由程序侧执行负面情绪优先策略。
+
+### 7. 扩展约定
+
+- 之后所有复杂 action 都必须通过 `InteractionActionSystem` 完成生命周期闭环，不能绕过 `tryLock()/release()`。
+- 新 action 如需参与随机调度，应接入类似 `scheduleRandomRestBehavior()` 的统一调度入口，而不是在任意帧直接触发。
+- 如果要支持 action 被负面情绪中断，需要在 `InteractionActionInstance.cancel()` 中完整清理 ECS 锁组件、力组件和临时状态。
+
+---
+
+## Phase 12 技术交接：Action 生命周期订阅与跟随暂停机制
+
+### 1. 阶段概述
+
+本阶段将 action 生命周期监听器升级为订阅者模式，并新增跟随逻辑订阅者，解决 `play-football` 执行时精灵仍受 HMD 跟随高度影响的问题。
+
+### 2. 订阅者模式设计
+
+`InteractionActionLockState` 内部维护订阅关系：
+
+```kotlin
+private data class ListenerSubscription(
+    val listener: InteractionActionListener,
+    val actionIds: Set<String>
+)
+```
+
+订阅规则：
+
+- `actionIds` 为空：监听所有 action。
+- `actionIds` 非空：只监听集合内指定 action。
+- action 开始时调用 `onActionStarted(actionId, controllerId, source)`。
+- action 完成或失败时调用 `onActionFinished(actionId, controllerId, source, status)`。
+
+### 3. 跟随控制模块
+
+新增 `FairyFollowControlModule`：
+
+- 实现 `InteractionActionListener`。
+- `onActionStarted()` 中设置 `isFollowEnabled = false`。
+- `onActionFinished()` 中设置 `isFollowEnabled = true`。
+- 在 `MateFairyRuntimeFactory` 中通过 `InteractionActionRuntimeDependencies.lockState.addListener(FairyFollowControlModule)` 注册。
+
+`FairyBehaviorSystem` 每帧检测：
+
+```kotlin
+if (fairyEntity.components[FairyActionLockComponent::class.java] != null ||
+    !FairyFollowControlModule.isFollowEnabled
+) {
+    visualTransform.position = transform.position
+    visualTransform.eulerAngles = transform.eulerAngles
+    continue
+}
+```
+
+这意味着 action 期间跟随/随机巡航状态机不会继续计算 HMD 圆环目标，也不会继续覆盖 action 控制器的运动力。
+
+### 4. play-football 高度修复
+
+`PlayFootballActionController` 的接近目标点从：
+
+```kotlin
+y = max(footballPosition.y + hoverHeightAboveBall, subjectPosition.y)
+```
+
+改为：
+
+```kotlin
+y = footballPosition.y + hoverHeightAboveBall
+```
+
+设计原因：
+
+- action 目标应由客体实体的真实空间位置决定，而不是继承主体当前高度。
+- 当 HMD 高度较高时，主体当前高度会错误地把踢球点抬高。
+- 使用足球 Y 坐标 + 小悬停高度可保证精灵移动到足球附近，而不是足球上方。
+
+### 5. 扩展约定
+
+- 后续模块如 UI、音频、日志、特效都可以实现 `InteractionActionListener`，通过订阅 action 生命周期解耦。
+- 如果某模块只关心部分 action，使用 `addListener(listener, setOf("action-id"))`。
+- action controller 自身只负责动作逻辑，不应直接调用跟随模块；模块间通信通过 action 生命周期事件完成。
+
+---
+
+## Phase 13 技术交接：Action Recovery 与踢球近距离门槛
+
+### 1. 阶段概述
+
+本阶段修复 `play-football` 结束后精灵飞回 action 前旧位置的问题，并新增近距离触发门槛，防止精灵从远处突然飞去踢球。
+
+### 2. Action Recovery 机制
+
+`FairyBehaviorSystem` 新增 `wasFollowEnabled`，用于检测跟随控制从关闭恢复为开启的瞬间：
+
+```kotlin
+val followEnabled = FairyFollowControlModule.isFollowEnabled
+val followJustRestored = !wasFollowEnabled && followEnabled
+```
+
+恢复第一帧调用 `reconcileAfterAction()`：
+
+- 重置 `lastPosition = fairyPos`，避免 action 位移造成速度尖峰。
+- 重置 `baseY = fairyPos.y`，让悬浮基准从当前位置开始。
+- 清空 `waitTimer/isWaitingForAnimation`。
+- 如果精灵与 HMD 水平距离大于 `outerRadius`，进入 `FOLLOWING`，目标为 HMD 跟随内圈随机点。
+- 如果仍在跟随范围内，进入 `RANDOM_MOVING`，从当前位置恢复随机运动。
+
+### 3. action 期间状态同步
+
+当 action 锁存在或跟随被关闭时，`FairyBehaviorSystem` 不再写跟随力，但会同步：
+
+```kotlin
+behavior.lastPosition = transform.position
+behavior.hasRecordedLastPosition = true
+```
+
+这样 action 结束后不会因为 `lastPosition` 仍停留在 action 前位置而计算出异常大速度。
+
+### 4. 近距离触发门槛
+
+随机触发侧：
+
+- `tryScheduleRandomPlayFootball(context, fairyPos)` 会先查找 `football`。
+- 读取足球 `TransformComponent.position`。
+- 计算精灵与足球的 XZ 平面距离。
+- 只有距离小于 `RANDOM_PLAY_FOOTBALL_MAX_HORIZONTAL_DISTANCE = 0.85m` 时才允许入队。
+
+action controller 侧：
+
+- `PlayFootballActionController` 在 `DETECTING` 阶段检查 `activationHorizontalDistance`。
+- 默认值为 `0.85m`，也可通过 request params 覆盖。
+- 如果距离超限，action 返回 `FAILED`，不会进入接近足球流程。
+
+### 5. 行为结果
+
+- 踢完球后如果精灵已经超出跟随范围，会从踢球位置飞回 HMD 跟随区。
+- 踢完球后如果仍在跟随范围内，会从当前位置恢复随机运动。
+- 精灵不会再快速飞回 action 前旧目标点。
+- 足球距离太远时，随机触发和对话触发都不会突然让精灵远距离飞去踢球。
+
+---
+
+## Phase 14 技术交接：Gradle Sync 与空间网格管理恢复
+
+### 1. 阶段概述
+
+本阶段修复项目无法启动的两类阻断问题：一类发生在 Gradle Sync 配置阶段，另一类发生在 Kotlin 编译阶段。修复后 `:app:assembleDebug` 已可成功生成 Debug APK。
+
+### 2. Gradle Sync 阻断点
+
+`/Users/bytedance/MateFairy/editor-asset/build.gradle` 中残留了 Git 冲突标记：
+
+```groovy
+<<<<<<< HEAD
+}
+=======
+}
+>>>>>>> commit
+```
+
+Gradle 解析 Groovy DSL 时会在 `spatial {` 附近报语法错误：
+
+```text
+Unexpected input: '{' @ line 27, column 9.
+```
+
+修复方式是保留唯一的 `spatial` 闭包：
+
+```groovy
+spatial {
+    name = "editor-asset"
+    spatialToolsVersion = 0.11
+}
+```
+
+### 3. `SpatialMeshManager` 职责恢复
+
+`/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/perception/SpatialMeshManager.kt` 负责把 PICO Mesh Anchor 转成 ECS 静态碰撞实体。
+
+核心字段：
+
+- `parentEntity: Entity?`：环境 Mesh 实体挂载的父节点，当前由 `HomeStage` 传入 `rootEntity`。
+- `subscription: Cancellable?`：`MeshTrackingManager.subscribeAnchorUpdate` 返回的订阅句柄。
+- `meshEntities: MutableMap<UUID, Entity>`：按 Mesh Anchor UUID 管理实体，便于更新和删除。
+- `occlusionMaterial: Material?`：预留遮挡材质引用，当前阶段不渲染 Mesh 模型。
+
+核心流程：
+
+```kotlin
+fun start(parentEntity: Entity) {
+    this.parentEntity = parentEntity
+    if (subscription == null) {
+        subscription = MeshTrackingManager.subscribeAnchorUpdate { update ->
+            mainHandler.post { handleAnchorUpdate(update) }
+        }
+    }
+    MeshTrackingManager.start()
+}
+```
+
+Anchor 更新处理：
+
+```kotlin
+private fun handleAnchorUpdate(update: AnchorUpdate<MeshAnchor>) {
+    when (update.event) {
+        AnchorUpdate.Event.ADDED,
+        AnchorUpdate.Event.UPDATED,
+        AnchorUpdate.Event.LOADED -> upsertMeshEntity(update.anchor)
+        AnchorUpdate.Event.REMOVED -> removeMeshEntity(update.anchor.anchorUUID)
+    }
+}
+```
+
+碰撞体生成：
+
+```kotlin
+val mesh = MeshResource.loadFromMeshAnchor(anchor.anchorUUID)
+val shape = ShapeResource.createStaticMesh(mesh)
+val entity = Entity().apply {
+    components[TransformComponent::class.java]?.apply {
+        setPosition(parent.convertPositionFrom(anchor.transform.position, null))
+        setQuaternion(parent.convertRotationFrom(anchor.transform.rotation.toQuat(), null))
+    }
+    components.set(
+        CollisionComponent(
+            collisionShape = listOf(shape),
+            physicsMaterial = PhysicsMaterialResource(),
+            collisionResponseMode = CollisionResponseMode.COLLIDER_FULL,
+            collisionFilter = CollisionFilter.COLLISION_FILTER_DEFAULT,
+            collisionInfoDetailLevel = CollisionInfoDetailLevel.BRIEF
+        )
+    )
+}
+```
+
+### 4. 行为组件字段约定
+
+`FairyBehaviorSystem` 当前依赖物理代理与视觉模型分离：
+
+- 物理代理：挂载 `FairyBehaviorComponent`、`RigidBodyComponent`、`PhysicsForceComponent`。
+- 视觉模型：保存在 `FairyBehaviorComponent.visualEntity`，用于同步机器人 GLB 根层级显示。
+
+`FairyBehaviorComponent` 必须包含：
+
+```kotlin
+var visualEntity: Entity? = null
+var lastPosition: Vector3 = Vector3.ZERO
+var hasRecordedLastPosition: Boolean = false
+```
+
+其中 `lastPosition/hasRecordedLastPosition` 用于 action recovery 和速度采样，避免 action 结束后从旧位置计算出异常速度。
+
+### 5. SDK/框架避坑指南
+
+- 合并分支后如果 Android Studio 提示 `Gradle project sync failed`，先运行 `./gradlew projects --stacktrace`，该命令比完整编译更快定位 Gradle 配置阶段错误。
+- PICO `MeshAnchor.transform.rotation` 在当前 SDK 中表现为欧拉角，传入 `convertRotationFrom()` 前需要调用 `toQuat()`。
+- Mesh Anchor 回调不应直接修改 ECS，应通过 `Handler(Looper.getMainLooper())` 切回主线程。
+- `ShapeResource.createStaticMesh(mesh)` 适合真实环境这种静态复杂几何，不要用于动态物体。
+- IDE Kotlin 诊断可能在 Gradle Sync 失败后保留旧红线；命令行 `:app:compileDebugKotlin` 和 `:app:assembleDebug` 是更可靠的验证依据。
+
+### 6. 验证命令
+
+```bash
+./gradlew projects --stacktrace
+./gradlew :app:compileDebugKotlin --console=plain
+./gradlew :app:assembleDebug --console=plain
+```

@@ -1,5 +1,7 @@
 package com.example.matefairy01.orchestrator.decision
 
+import com.example.matefairy01.interaction.PlayFootballActionController
+
 /**
  * 默认的行为决策器实现
  * 
@@ -12,6 +14,7 @@ class DefaultBehaviorDecisionMaker : BehaviorDecisionMaker {
 
     // 预设的高优先级情绪列表
     private val highPriorityEmotions = setOf("angry", "sad")
+    private val actionClassIntents = setOf(PlayFootballActionController.ACTION_ID)
 
     override fun decide(
         emotion: String,
@@ -41,7 +44,17 @@ class DefaultBehaviorDecisionMaker : BehaviorDecisionMaker {
             )
         }
 
-        // 3. 正常情况：动作优先或两者并行（比如一边开心一边飞过来）
+        // 3. action 类任务优先于普通动作/普通情绪动画，避免“跳舞 + 踢球”并发。
+        if (actionClassIntents.contains(normalizedAction)) {
+            return BehaviorDecision(
+                shouldTriggerEmotion = false,
+                shouldDispatchAction = true,
+                resolvedEmotion = normalizedEmotion,
+                resolvedActionIntent = normalizedAction
+            )
+        }
+
+        // 4. 正常情况：动作优先或两者并行（比如一边开心一边飞过来）
         // 对于普通情绪（happy, neutral, shy 等），允许动作并行或覆盖
         return BehaviorDecision(
             shouldTriggerEmotion = true,

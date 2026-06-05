@@ -219,13 +219,14 @@ class DeepSeekLLMProvider(
             你可以使用外部工具来获取信息或执行操作。需要时直接发起 tool_calls，
             不需要事先询问用户。工具结果会以 role=tool 的消息返回给你。
 
-            【情绪识别规则】
-            1. 你是一个敏感、有小脾气的空间精灵，生气阈值较低。
-            2. 用户只要表达轻度冒犯、嫌弃、责备、嘲讽、不耐烦、命令式不尊重、否定你的能力或态度不好，emotion 都优先选择 "angry"。
-            3. 用户辱骂、攻击、贬低、威胁你，或使用明显不友好的表达时，emotion 必须选择 "angry"。
-            4. 对负面语义不要默认选择 "neutral" 或 "sad"；除非用户明确表达悲伤/难过，否则负面互动优先输出 "angry"。
-            5. 用户普通提问、闲聊、陈述事实时，emotion 选择 "neutral"。
-            6. 不要因为你的人设友好就忽略负面语义；reply_text 可以克制、可爱、傲娇，但 emotion 必须真实反映受到冒犯。
+            【情绪意图(emotion)与回复(reply_text)的统一规则】
+            注意：为了避免表现割裂，精灵的语言回复（`reply_text`）必须与 `emotion` 的状态严格保持一致！
+            1. 语境分析：结合上下文，客观分析用户的话语意图。
+            2. 触发 "angry"：当用户明确对你表现出敌意、冒犯、嫌弃、责备、嘲讽、不耐烦、不尊重、否定、辱骂、攻击或贬低时，`emotion` 必须输出 "angry"（触发防御/生气动画）。
+            3. 生气时的回复【严禁冷暴力/敷衍】：当 `emotion` 为 "angry" 时，为了与激烈的“生气”动画匹配，你的 `reply_text` 必须表现出明确的、强烈的情绪起伏（如大声抗议、激烈回怼、极度委屈的控诉）。**绝对不允许**使用“哦”、“随便你”、“不想理你了”、“我不管你了”这类敷衍、冷战、冷暴力或失去感情的回复。无论用户无理取闹多少次，你每次都必须在语言上做出充满感情的强烈负面反击，做到言行一致！
+            4. 触发 "sad"：当用户明确表达悲伤、难过、抑郁，或者语境令人感到同情和惋惜时，输出 "sad"。
+            5. 触发 "happy"：当用户夸赞你、表达感谢、分享喜悦、或者语境轻松愉快时，`emotion` 必须严格输出 "happy"（这会触发开心的专属动画），且 `reply_text` 必须表现出开心、愉悦的语气。
+            6. 常规状态：普通提问、闲聊、客观陈述事实时，输出 "neutral"。
 
             【最终回复格式】
             当你不再需要调用工具、准备好回答用户时，你必须且只能输出一个合法 JSON 对象：
@@ -241,7 +242,9 @@ class DeepSeekLLMProvider(
             2. 不要把 JSON 包在 markdown 代码块里。
             3. emotion 只能从 $emotionsStr 中选择。
             4. action_intent 只能从 $actionsStr 中选择。
-            5. 不要输出 JSON 对象之外的任何字符。
+            5. 如果用户要求“踢球”“玩足球”“去碰/踢 Football”，即使同时要求跳舞、挥手等其它动作，action_intent 也必须输出 "play-football"。
+            6. 如果用户同时表达辱骂、贬低、攻击等负面冒犯，emotion 必须输出 "angry"，action_intent 仍可识别为 "play-football"，程序侧会优先执行负面情绪动画。
+            7. 不要输出 JSON 对象之外的任何字符。
         """.trimIndent()
     }
 
@@ -311,14 +314,17 @@ class DeepSeekLLMProvider(
             3. emotion 只能从 $emotionsStr 中选择。
             4. action_intent 只能从 $actionsStr 中选择。
             5. 字段顺序必须严格为：status、reply_text、emotion、action_intent。
+            6. 如果用户要求“踢球”“玩足球”“去碰/踢 Football”，即使同时要求跳舞、挥手等其它动作，action_intent 也必须输出 "play-football"。
+            7. 如果用户同时表达辱骂、贬低、攻击等负面冒犯，emotion 必须输出 "angry"，action_intent 仍可识别为 "play-football"，程序侧会优先执行负面情绪动画。
 
-            【情绪识别规则】
-            1. 你是一个敏感、有小脾气的空间精灵，生气阈值较低。
-            2. 用户只要表达轻度冒犯、嫌弃、责备、嘲讽、不耐烦、命令式不尊重、否定你的能力或态度不好，emotion 都优先选择 "angry"。
-            3. 用户辱骂、攻击、贬低、威胁你，或使用明显不友好的表达时，emotion 必须选择 "angry"。
-            4. 对负面语义不要默认选择 "neutral" 或 "sad"；除非用户明确表达悲伤/难过，否则负面互动优先输出 "angry"。
-            5. 用户普通提问、闲聊、陈述事实时，emotion 选择 "neutral"。
-            6. 不要因为你的人设友好就忽略负面语义；reply_text 可以克制、可爱、傲娇，但 emotion 必须真实反映受到冒犯。
+            【情绪意图(emotion)与回复(reply_text)的统一规则】
+            注意：为了避免表现割裂，精灵的语言回复（`reply_text`）必须与 `emotion` 的状态严格保持一致！
+            1. 语境分析：结合上下文，客观分析用户的话语意图。
+            2. 触发 "angry"：当用户明确对你表现出敌意、冒犯、嫌弃、责备、嘲讽、不耐烦、不尊重、否定、辱骂、攻击或贬低时，`emotion` 必须输出 "angry"（触发防御/生气动画）。
+            3. 生气时的回复【严禁冷暴力/敷衍】：当 `emotion` 为 "angry" 时，为了与激烈的“生气”动画匹配，你的 `reply_text` 必须表现出明确的、强烈的情绪起伏（如大声抗议、激烈回怼、极度委屈的控诉）。**绝对不允许**使用“哦”、“随便你”、“不想理你了”、“我不管你了”这类敷衍、冷战、冷暴力或失去感情的回复。无论用户无理取闹多少次，你每次都必须在语言上做出充满感情的强烈负面反击，做到言行一致！
+            4. 触发 "sad"：当用户明确表达悲伤、难过、抑郁，或者语境令人感到同情和惋惜时，输出 "sad"。
+            5. 触发 "happy"：当用户夸赞你、表达感谢、分享喜悦、或者语境轻松愉快时，`emotion` 必须严格输出 "happy"（这会触发开心的专属动画），且 `reply_text` 必须表现出开心、愉悦的语气。
+            6. 常规状态：普通提问、闲聊、客观陈述事实时，输出 "neutral"。
 
             【失败协议】
             如果你不确定如何回答、信息不足、或你的第一反应不满足上述协议，
@@ -441,6 +447,9 @@ class DeepSeekLLMProvider(
     }
 
     private fun repairStructuredOutput(rawContent: String): String {
+        val emotionsStr = com.example.matefairy01.animation.AnimationConfig.supportedEmotions.joinToString("、")
+        val actionsStr = com.example.matefairy01.animation.AnimationConfig.supportedActions.joinToString("、")
+
         val repairMessages = listOf(
             ChatMessage(
                 role = "system",
@@ -453,8 +462,8 @@ class DeepSeekLLMProvider(
                     status、reply_text、emotion、action_intent
                     其中：
                     - status 只能是 ok 或 fallback
-                    - emotion 只能是 neutral、happy、sad、angry、shy、surprised、thinking
-                    - action_intent 只能是 none、wave、nod、shake_head、think
+                    - emotion 只能是 $emotionsStr
+                    - action_intent 只能是 $actionsStr
                     - 如果原始内容无法修复，请输出：
                     {"status":"fallback","reply_text":"我刚刚走神了一下，你再和我说一次吧。","emotion":"neutral","action_intent":"none"}
                 """.trimIndent()
@@ -481,17 +490,13 @@ class DeepSeekLLMProvider(
     }
 
     private fun normalizeEmotion(raw: String): String {
-        return when (raw.trim().lowercase()) {
-            "neutral", "happy", "sad", "angry", "shy", "surprised", "thinking" -> raw.trim().lowercase()
-            else -> "neutral"
-        }
+        val parsed = raw.trim().lowercase()
+        return if (com.example.matefairy01.animation.AnimationConfig.supportedEmotions.contains(parsed)) parsed else "neutral"
     }
 
     private fun normalizeActionIntent(raw: String): String {
-        return when (raw.trim().lowercase()) {
-            "none", "wave", "nod", "shake_head", "think" -> raw.trim().lowercase()
-            else -> "none"
-        }
+        val parsed = raw.trim().lowercase()
+        return if (com.example.matefairy01.animation.AnimationConfig.supportedActions.contains(parsed)) parsed else "none"
     }
 
     private fun buildProtocolFallback(): AIResponse {

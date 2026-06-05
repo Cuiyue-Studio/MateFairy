@@ -35,9 +35,11 @@ enum class FairyAnimation(
 ) {
     // --- 情绪动画 (EMOTION) ---
     MAD_ACTION(5, "Mad Action", AnimationType.EMOTION_REACTION, 3000L, "angry"),
+    HAPPY_ACTION(6, "Happy Action", AnimationType.EMOTION_REACTION, 3000L, "happy"),
 
     // --- 指令动画 (ACTION) ---
     // 目前指令动画暂未就绪，留空。后期直接在这里增加即可。
+    DANCE_ACTION(7, "Dance Action", AnimationType.NON_TASK_ACTION, 4000L, "dance"),
 
     // --- 常驻动画 (BASE) ---
     // 这里全是原有的老动画，均作为兜底的基础表现
@@ -56,7 +58,7 @@ object AnimationConfig {
     val supportedEmotions: List<String> = (listOf("neutral", "sad", "surprised", "thinking") + 
         FairyAnimation.values().filter { it.type == AnimationType.EMOTION_REACTION }.mapNotNull { it.intent }).distinct()
     
-    val supportedActions: List<String> = (listOf("none", "fetch_ball") + 
+    val supportedActions: List<String> = (listOf("none", "fetch_ball", "play-football") +
         FairyAnimation.values().filter { it.type == AnimationType.NON_TASK_ACTION }.mapNotNull { it.intent }).distinct()
 
     fun getAnimationByEmotion(emotion: String): FairyAnimation? {

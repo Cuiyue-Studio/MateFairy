@@ -26,7 +26,7 @@ object AppModule {
     fun initialize(context: Context) {
         if (runtime != null) return
         val appConfig = AppConfigLoader.load(context.applicationContext)
-        val newRuntime = MateFairyRuntimeFactory.create(appConfig)
+        val newRuntime = MateFairyRuntimeFactory.create(appConfig, context.applicationContext)
         // 把 AvatarController 绑定给行为系统全局桥接对象
         BehaviorRuntimeDependencies.bindAvatarController(newRuntime.avatarController)
         runtime = newRuntime
@@ -49,4 +49,8 @@ object AppModule {
     /** MCP 工具管理器：暴露用于 debug 或健康检查 */
     val mcpManager: McpManager
         get() = requireRuntime().mcpManager
+
+    /** 音乐模块：用于全局播放背景音乐等 */
+    val musicModule: com.example.matefairy01.audio.MusicModule
+        get() = requireRuntime().musicModule
 }

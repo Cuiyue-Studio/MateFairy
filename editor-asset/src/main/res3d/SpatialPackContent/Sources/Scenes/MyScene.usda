@@ -83,68 +83,19 @@ def Xform "Root"
         prepend references = @../Assets/box.usdz@
     )
     {
-        quatf xformOp:orient = (0.7071068, 0.7071067, 0, 0) (
-            customData = {
-                float3 euler = (90, 0, 0)
-            }
-        )
-        float3 xformOp:scale = (1.2, 1.2, 1.2)
+        custom token visibility = "inherited"
+        quatf xformOp:orient = (1, 0, 0, 0)
+        float3 xformOp:scale = (1, 1, 1)
         float3 xformOp:translate = (0, 0, 0)
-    }
-
-    def "Sky_Sphere" (
-        prepend references = @../Assets/Sky Sphere.usdz@
-    )
-    {
-        quatf xformOp:orient = (0.7071069, -0.70710665, 0, 0)
-        float3 xformOp:scale = (1, 0.9999998, 0.9999998)
-        float3 xformOp:translate = (0, 0, 0)
-
-        over "_materials"
-        {
-            over "Sky_Sphere_m"
-            {
-                over "Principled_BSDF"
-                {
-                    color3f inputs:diffuseColor = (1.0000036, 1, 0.9999964) (
-                        colorSpace = "lin_srgb"
-                    )
-                    color3f inputs:diffuseColor.connect = </Root/Sky_Sphere/_materials/Sky_Sphere_m/____________.outputs:rgb>
-                    float inputs:diffuseOpacity = 1
-                    bool inputs:toneMapping = 0
-                }
-
-                over "____________"
-                {
-                    float4 inputs:fallback = (0.5, 0.5, 0.5, 1)
-                    asset inputs:file = @../Assets/skybox.png@
-                    custom float spatial:AnisotropyLevel = 1
-                    custom int spatial:Col = 1
-                    custom float spatial:CompressionQuality = 60
-                    custom token spatial:CubeMapMode = "Auto"
-                    custom bool spatial:GenerateMipmap = 1
-                    custom token spatial:MaxSize = "MaxSize_4096"
-                    custom token spatial:MipmapFilter = "Mitchell"
-                    custom token spatial:MipmapMode = "Default"
-                    custom token spatial:ResizeFilter = "Mitchell"
-                    custom int spatial:Row = 1
-                    custom token spatial:SourceColorSpace = "srgb_texture"
-                    custom token spatial:TargetColorSpace = "srgb_displayp3"
-                    custom token spatial:TextureFilterMode = "LINEAR_MIPMAP_NEAREST"
-                    custom token spatial:TextureFormat = "RGBA_ASTC_6x6"
-                    custom token spatial:TextureShape = "Texture2D"
-                    custom token spatial:TextureType = "Default"
-                    custom bool spatial:YFlip = 0
-                }
-            }
-        }
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
     }
 
     def "Toy_Robot_2_Anim" (
         prepend references = @../Assets/Toy Robot 2_Anim.usdz@
     )
     {
-        quatf xformOp:orient = (-0.70710677, 0.70710677, -6.181724e-8, -6.181724e-8) (
+        token visibility = "inherited"
+        quatf xformOp:orient = (0.7071068, -0.7071067, 6.181724e-8, 6.181724e-8) (
             customData = {
                 float3 euler = (-90, 180, 180)
             }
@@ -159,16 +110,89 @@ def Xform "Root"
             {
                 over "Mesh_001"
                 {
-                    quatf xformOp:orient = (0.99999946, 5.3559976e-23, -1.8003092e-15, -0.0010358008) (
+                    quatf xformOp:orient = (0.99999946, -1.8398463e-18, -3.5766657e-15, -0.0010358008) (
                         customData = {
                             float3 euler = (0, -0, -0.115577)
                         }
                     )
-                    float3 xformOp:scale = (1.0000002, 1, 1)
-                    float3 xformOp:translate = (-0.0000010717097, 0.0000011335983, 2.3841855e-7)
+                    float3 xformOp:scale = (1.0000005, 1, 1)
+                    float3 xformOp:translate = (-0.0000021422454, 0.0000022683066, 4.768371e-7)
                     uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
                 }
             }
+        }
+    }
+
+    def "Football" (
+        prepend references = @../Assets/Football.usdz@
+    )
+    {
+        quatf xformOp:orient = (0.7071068, -0.7071067, 0, 0)
+        float3 xformOp:scale = (1, 0.99999994, 0.99999994)
+        float3 xformOp:translate = (0.786425, 0, -0.9091661)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def SpatialComponent "BehaviorTriggerComponent"
+        {
+            uniform token info:id = "BehaviorTriggerComponent"
+            uint64 info:typeId = 12798880688755937628
+
+            def SpatialStruct "onCollision0"
+            {
+                string action = ""
+                string actionPath = ""
+                string colliders = ""
+                string collidersPath = ""
+                uint64 info:typeId = 17199166629718374453
+            }
+        }
+
+        def SpatialComponent "CollisionComponent"
+        {
+            uniform token info:id = "CollisionComponent"
+            uint64 info:typeId = 10170138008305910195
+
+            def SpatialStruct "shapes0"
+            {
+                float3 center = (-0.00010161847, -0.0001484789, 0.10460185)
+                uint64 id = 3
+                uint64 info:typeId = 4878244361267076049
+                bool isConvexMesh = 1
+                quatf rotation = (1, 0, 0, 0)
+                float3 size = (0.21485125, 0.21485132, 0.21485166)
+                token type = "BOX"
+
+                def SpatialStruct "mesh"
+                {
+                    uint64 info:typeId = 7578755580861454209
+                    uint64 parent_resource_id = 0
+                    uint64 resource_id = 0
+                }
+            }
+        }
+
+        def SpatialComponent "HoverEffectComponent"
+        {
+            uniform token info:id = "HoverEffectComponent"
+            uint64 info:typeId = 11382530251509434734
+        }
+
+        def SpatialComponent "BaseInteractableComponent"
+        {
+            uniform token info:id = "BaseInteractableComponent"
+            uint64 info:typeId = 16525078428149291770
+        }
+
+        def SpatialComponent "PhysicsForceComponent"
+        {
+            uniform token info:id = "PhysicsForceComponent"
+            uint64 info:typeId = 7647170509123286771
+        }
+
+        def SpatialComponent "RigidBodyComponent"
+        {
+            uniform token info:id = "RigidBodyComponent"
+            uint64 info:typeId = 16147621430493327242
         }
     }
 }

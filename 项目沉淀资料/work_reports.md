@@ -1,7 +1,7 @@
 # MateFairy01 工作汇报总览
 
 > 本文档汇总了项目各阶段的工作汇报，用于快速了解项目开发进度与完成情况。
-> 最后更新：2026-05-26
+> 最后更新：2026-06-05
 
 ---
 
@@ -362,3 +362,236 @@
 - 已执行：`./gradlew :app:compileDebugKotlin --no-daemon -Dkotlin.compiler.execution.strategy=in-process`
 - 结果：编译通过。
 - IDE 诊断：`GetDiagnostics` 返回空列表。
+
+
+### Phase 9 补充：空间扫描改为持续开启并移除 Debug 线框
+
+#### 一、功能调整
+
+- 删除 `HomeStage.kt` 中的 `mesh_scan_toggle` 附件面板和按钮状态变量。
+- 空间扫描不再依赖用户点击开关，而是在 `SpatialView.initial` 完成 `rootEntity` 加入场景后直接调用 `spatialMeshManager.start(rootEntity)`。
+- `onDispose` 中保留 `spatialMeshManager.dispose()`，确保退出 Stage 时停止扫描并清理 App 侧生成的网格碰撞实体。
+- 删除 `SpatialMeshManager.kt` 中的 Debug 绿色线框渲染逻辑：不再创建 `UnlitMaterial`、不再设置 `PolygonFillMode.LINE`、不再挂载 `ModelComponent`。
+- 当前空间网格只生成 `CollisionComponent`，用于物理碰撞和射线检测，不显示可视网格。
+
+#### 二、编译与诊断
+
+- 已执行：`./gradlew :app:compileDebugKotlin --no-daemon -Dkotlin.compiler.execution.strategy=in-process`
+- 结果：编译通过。
+- IDE 诊断：`GetDiagnostics` 返回空列表。
+
+#### 三、注意事项
+
+- 扫描现在会随 Stage 初始化持续开启，性能压力会高于手动开关方案。
+- 后续如出现帧率、发热或内存压力，应优先实现动态扫描策略或区块卸载策略。
+
+
+### Phase 9 故障排查：项目无法启动/打包失败
+
+#### 一、排查结论
+
+- 本次首先确认到的硬性阻断不是运行时崩溃，而是 `:app:compileDebugKotlin` 编译失败。
+- 失败位置集中在 `HomeStage.kt` 中新增的足球点击交互代码。
+- 该代码使用了错误的 PICO Spatial SDK 手势 API 包名，并调用了不存在的 `PhysicsForceComponent.addImpulse()`。
+
+#### 二、证据
+
+执行：
+
+```bash
+./gradlew :app:assembleDebug --no-daemon -Dkotlin.compiler.execution.strategy=in-process
+```
+
+修复前错误：
+
+```text
+Unresolved reference 'detectSpatialDragGesture'
+Unresolved reference 'detectSpatialTapGesture'
+Unresolved reference 'TargetEntity'
+Unresolved reference 'addImpulse'
+```
+
+SDK 0.11.7 源码确认：
+
+- `detectSpatialTapGesture` / `TargetEntity` 位于 `com.pico.spatial.ui.foundation.gesture`。
+- `PhysicsForceComponent` 只提供 `force` / `torque`，没有 `addImpulse()`。
+- 一次性冲量/速度类效果应使用 `PhysicsVelocityComponent`。
+
+#### 三、修复内容
+
+- 修正 `HomeStage.kt` 中手势 import：从 `content` 包改为 `gesture` 包。
+- 删除未使用的 `detectSpatialDragGesture` import。
+- 为 `detectSpatialTapGesture` 补齐 `context = context` 参数。
+- 将 `forceComp?.addImpulse(...)` 替换为：
+  ```kotlin
+  val velocityComp = football.components[PhysicsVelocityComponent::class.java]
+      ?: PhysicsVelocityComponent().also { football.components.set(it) }
+  velocityComp.linearVelocity = Vector3(0f, 3.0f, -3.0f)
+  ```
+
+#### 四、验证情况
+
+- 修复后 `./gradlew :app:assembleDebug --no-daemon -Dkotlin.compiler.execution.strategy=in-process` 通过。
+- `GetDiagnostics` 返回空列表。
+- 本环境没有 `adb` 命令，无法直接完成设备安装/启动和 logcat 验证；如设备上仍启动失败，需要补充 Android Studio Run 控制台或 logcat 崩溃栈。
+
+---
+
+## Phase 10 工作汇报：精灵与虚拟物体交互 Action 基建
+
+### 一、功能开发完成情况
+
+- 新增 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/InteractionActionCore.kt`，定义主体/客体标记组件、action 请求、controller/instance 接口、注册表、请求总线和实体解析器。
+- 新增 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/InteractionActionSystem.kt`，作为 ECS 系统持续调度交互 action；不同 `controllerId` 可并行运行，新的请求会替换同 controller 的旧实例。
+- 新增 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/PlayFootballActionController.kt`，实现 `play-football`：检测足球、接近足球、面向足球、按扇面约束方向给足球设置安全范围内的初速度。
+- 新增 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/action/handlers/SceneInteractionActionHandler.kt`，把旧 `ActionRegistry` 的 LLM 意图分发桥接到 ECS 场景内的持续 action 请求总线。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt`：注册 `InteractionActionSystem`，为精灵代理实体添加 `InteractionActorComponent`，为 Editor 中的 `Football` 添加 `InteractionObjectComponent`。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/behavior/FairyBehaviorSystem.kt`：当精灵存在 `FairyActionLockComponent` 时让出常驻跟随/巡航控制，避免和交互 action 抢 `PhysicsForceComponent`。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/runtime/MateFairyRuntimeFactory.kt` 与 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/animation/AnimationConfig.kt`：注册 `play-football` controller，并将该 intent 暴露给 LLM action 列表。
+
+### 二、编译与测试情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+- 已执行：`GetDiagnostics`。
+- 结果：无诊断错误。
+
+### 三、技术债务与踩坑记录
+
+- 当前 `play-football` 采用 `PhysicsVelocityComponent.linearVelocity` 作为一次性踢球冲量，便于避免持续施力导致足球失控；速度通过 `minKickSpeed/maxKickSpeed` 限制在安全区间。
+- 踢球方向不直接信任外部任意向量，而是基于精灵朝向/精灵到足球的方向，并用 `maxKickFanAngleDegrees` 对 yaw 偏移做扇面裁剪，避免球向背后或侧后方乱飞。
+- 精灵常驻行为系统每帧也会写入 `PhysicsForceComponent`，因此新增 `FairyActionLockComponent` 作为运动控制权仲裁信号；后续所有复杂交互 action 都应复用该机制。
+- 踢球动画和 Action 类动画调度器尚未开发，代码中已在踢球触发点预留 `TODO`，后续应接入 `KICK_FOOTBALL` 等动作枚举。
+
+### 四、后续开发建议
+
+- 增加 Action 类动画调度器，区分 `BASE/EMOTION/NON_TASK_ACTION/TASK_ACTION`，并让 `play-football` 在触球瞬间播放踢球动画。
+- 为 `InteractionActionSystem` 增加队列策略、超时策略和 action 取消回调，避免复杂任务失败时残留锁组件。
+- 将 `play-football` 的安全速度、扇面角、接近距离等参数下沉到配置文件或可视化调试面板，方便真机调参。
+
+---
+
+## Phase 11 工作汇报：play-football 触发条件与 Action 锁定调度
+
+### 一、功能开发完成情况
+
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/InteractionActionCore.kt`，新增 `InteractionActionSource`、`InteractionActionListener`、`InteractionActionLockState`，并让 `InteractionActionRequestBus.enqueue()` 在 action 锁定期间拒绝新 action。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/InteractionActionSystem.kt`，在 action 启动时获取全局锁，在 `COMPLETED/FAILED` 时释放锁并发送结束信号给监听器。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/animation/AnimationModule.kt`，实现 `InteractionActionListener`：action 开始时停止当前动画；action 锁定期间拒绝播放任何动画，包括随机 idle/moving、普通动作动画和情绪动画。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/behavior/FairyBehaviorSystem.kt`，把随机踢球纳入随机休息调度：精灵到达随机目标或跟随结束进入休息态时，按概率优先尝试触发 `play-football`，否则再走随机 idle 动画。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/orchestrator/decision/DefaultBehaviorDecisionMaker.kt`，将 `play-football` 定义为 action 类任务：普通情绪不与该 action 并行，负面高优情绪仍会拦截 action。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/ai/DeepSeekLLMProvider.kt` 与 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/ai/MockLLMProvider.kt`，增强语义识别规则：涉及踢球/足球时输出 `play-football`；辱骂 + 踢球时输出 angry + play-football，由决策层拦截动作。
+
+### 二、优先级规则
+
+- action 执行中：允许对话返回文本，但 `AnimationModule` 拒绝任何动画播放请求。
+- 随机调度：随机踢球与随机 idle 动画互斥，优先尝试 action，失败或未命中概率才触发 idle 动画。
+- 对话调度：`play-football` 优先于普通动作和普通情绪动画。
+- 负面情绪：`angry/sad` 优先级高于 `play-football`，会拦截 action，只播放对应情绪动画。
+
+### 三、编译与测试情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+- 已执行：`GetDiagnostics`。
+- 结果：无诊断错误。
+
+### 四、后续开发建议
+
+- 将 `RANDOM_PLAY_FOOTBALL_CHANCE`、随机 action 冷却时间等调度参数放入配置文件，便于真机调参。
+- 后续新增 action controller 时必须复用 `InteractionActionLockState` 的开始/结束信号，保证 action 生命周期可被动画、UI、日志系统统一监听。
+- 如果未来需要“负面情绪打断正在执行的 action”，需要扩展 action cancel 语义；当前策略是 action 执行期间完全锁住动画，负面情绪也不会播放。
+
+---
+
+## Phase 12 工作汇报：Action 期间暂停跟随与订阅式监听优化
+
+### 一、功能开发完成情况
+
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/InteractionActionCore.kt`，将 action 生命周期监听器升级为订阅模式：`InteractionActionLockState.addListener(listener, actionIds)` 支持按 actionId 过滤监听，空集合表示监听全部 action。
+- 新增 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/behavior/FairyFollowControlModule.kt`，作为跟随逻辑模块的 action 生命周期订阅者。action 开始时关闭跟随控制，action 结束/失败时恢复跟随控制。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/runtime/MateFairyRuntimeFactory.kt`，注册 `FairyFollowControlModule` 到全局 action 生命周期订阅中心。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/behavior/FairyBehaviorSystem.kt`，当 `FairyFollowControlModule.isFollowEnabled == false` 时跳过跟随/随机巡航逻辑，仅同步视觉模型，不再写入跟随力，避免与 action 控制器抢 `PhysicsForceComponent`。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/PlayFootballActionController.kt`，修复接近足球目标点的 Y 轴计算：不再使用 `max(footballY, subjectY)`，而是直接使用 `football.y + hoverHeightAboveBall`，确保精灵下降到足球真实空间高度附近踢球。
+
+### 二、问题修复说明
+
+- 原问题：当玩家头显高度远高于足球时，精灵跟随系统会持续把目标高度绑定到 HMD 附近；同时 `play-football` 的接近目标 Y 轴保留了当前精灵高度，导致精灵在足球正上方踢球。
+- 修复后：action 开始时由订阅者关闭跟随模块，`play-football` 自己完全接管精灵运动目标；接近点高度以足球真实位置为准。
+- action 完成或失败后：`InteractionActionSystem` 释放 action 锁并发出结束信号，`FairyFollowControlModule` 收到信号后恢复跟随。
+
+### 三、编译与测试情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+- 已执行：`GetDiagnostics`。
+- 结果：无诊断错误。
+
+### 四、后续开发建议
+
+- 如果未来某些 action 不需要关闭跟随，可在注册 `FairyFollowControlModule` 时传入指定 actionId 集合，或者新增更细粒度的 follow-policy。
+- 后续 action controller 应避免依赖 HMD 高度作为交互目标高度，涉及客体交互时优先使用客体实体的真实空间 transform。
+
+---
+
+## Phase 13 工作汇报：踢球结束状态恢复与近距离触发门槛
+
+### 一、功能开发完成情况
+
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/behavior/FairyBehaviorSystem.kt`，新增 action 结束后的跟随恢复调和逻辑。跟随从关闭恢复为开启的第一帧，会基于精灵当前位置与 HMD 的水平距离重新选择状态。
+- 修复踢球后迅速飞回原位置的问题：action 期间持续同步 `behavior.lastPosition`，action 结束后清空旧等待/动画状态，并重置 `baseY/currentTarget/state`，避免继续追逐 action 前的旧 `currentTarget`。
+- 当 action 结束后精灵超出 `outerRadius`，系统进入 `FOLLOWING`，从踢球位置飞回跟随区。
+- 当 action 结束后精灵仍在跟随允许范围内，系统进入 `RANDOM_MOVING`，从当前位置恢复随机运动，而不是飞回 action 前的位置。
+- 修改随机踢球触发条件：只有精灵与足球的水平距离小于 `RANDOM_PLAY_FOOTBALL_MAX_HORIZONTAL_DISTANCE = 0.85m` 时，随机 `play-football` 才会入队。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/PlayFootballActionController.kt`，新增 action 自身的启动门槛 `activationHorizontalDistance = 0.85m`，对随机触发和对话触发都生效，避免远距离突然飞去踢球。
+
+### 二、问题根因
+
+- action 前 `FairyBehaviorSystem` 可能处于 `RANDOM_MOVING` 或 `FOLLOWING`，其中 `currentTarget` 仍指向 action 前生成的目标点。
+- action 执行期间跟随逻辑暂停，但 `lastPosition/currentTarget/state/baseY` 没有根据 action 后位置重新调和。
+- action 结束后跟随逻辑恢复，行为系统继续使用旧目标和旧速度采样，导致精灵快速飞回 action 前的目标位置。
+
+### 三、编译与测试情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+- 已执行：`GetDiagnostics`。
+- 结果：存在 IDE 诊断缓存/索引类报错，但 Gradle 编译通过，本次改动文件未产生编译错误。
+
+### 四、后续开发建议
+
+- 将 `RANDOM_PLAY_FOOTBALL_MAX_HORIZONTAL_DISTANCE` 和 `activationHorizontalDistance` 下沉到统一配置，方便真机调参。
+- 后续 action 结束后如有不同恢复策略，可将 `reconcileAfterAction()` 抽象为 action recovery policy。
+
+---
+
+## Phase 14 工作汇报：Gradle Sync 与启动编译故障修复
+
+### 一、功能开发完成情况
+
+- 修复 `/Users/bytedance/MateFairy/editor-asset/build.gradle` 中残留的 Git 冲突标记，解决 Gradle Sync 阶段 Groovy 脚本解析失败的问题。
+- 补回 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/perception/SpatialMeshManager.kt` 的实现，恢复空间网格扫描、Mesh Anchor 生命周期订阅、静态碰撞实体生成和释放逻辑。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/behavior/FairyBehaviorComponent.kt`，补齐 `visualEntity`、`lastPosition`、`hasRecordedLastPosition` 字段，使当前行为系统和 action recovery 逻辑可以正常编译。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/audio/FairyAudioModule.kt`，将常驻语音轮询中的协程活跃状态判断改为 `kotlin.coroutines.coroutineContext.isActive`，避免 suspend 函数内 `isActive` 接收者不明确导致编译失败。
+
+### 二、问题根因
+
+- `editor-asset/build.gradle` 合并冲突未清理，导致 Gradle 在配置 `:editor-asset` 时直接报 `Unexpected input: '{'`，Android Studio 显示 `Gradle project sync failed`。
+- `SpatialMeshManager.kt` 文件内容为空，但 `HomeStage.kt` 仍引用 `SpatialMeshManager(mainHandler)`、`start()`、`dispose()`、`setOcclusionMaterial()`，导致编译阶段出现未解析引用。
+- `FairyBehaviorSystem.kt` 已依赖物理代理与视觉实体分离后的行为字段，但 `FairyBehaviorComponent.kt` 没有同步保存这些字段。
+- 音频模块中的 `isActive` 在当前 Kotlin/协程版本下不能在普通 suspend 成员函数中作为无接收者属性解析。
+
+### 三、编译与测试情况
+
+- 已执行：`./gradlew projects --stacktrace`。
+- 结果：Gradle 项目配置与模块发现通过，Sync 级别阻断问题已解除。
+- 已执行：`./gradlew :app:compileDebugKotlin --console=plain`。
+- 结果：Kotlin 编译通过，仅剩 `FairyAudioModule.kt` 中一个“条件恒为 false”的历史警告。
+- 已执行：`./gradlew :app:assembleDebug --console=plain`。
+- 结果：Debug APK 构建成功。
+
+### 四、后续开发建议
+
+- Android Studio 仍可能显示旧的 Kotlin 诊断缓存；建议重新 Sync Gradle 或执行 Invalidate Caches 后再看 IDE 红线。
+- 后续合并分支后优先运行 `./gradlew projects`，可最快发现 Gradle 脚本冲突标记。
+- `SpatialMeshManager` 当前保留了 `occlusionMaterial` 字段但未渲染 Mesh Debug/遮挡模型；后续如需真实遮挡可增加 `ModelComponent(mesh, material)` 的可选调试/遮挡路径。
