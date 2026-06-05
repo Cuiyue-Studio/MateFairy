@@ -26,6 +26,12 @@
       "enabledTools": ["*"]
     }
   },
+  "webSearch": {
+    "enabled": true,
+    "provider": "duckduckgo",
+    "apiKey": "",
+    "maxResults": 5
+  },
   "memory": {
     "consolidate": {
       "tokenThreshold": 3000,

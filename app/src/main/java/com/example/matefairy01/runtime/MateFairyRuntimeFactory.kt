@@ -46,7 +46,12 @@ object MateFairyRuntimeFactory {
 
     fun create(context: Context, appConfig: AppConfig): MateFairyRuntime {
         // ----- 基础设施 -----
-        val mcpManager = McpManager(appConfig.mcpServers)
+        val localTools = buildList {
+            if (appConfig.webSearch.enabled) {
+                add(com.example.matefairy01.tools.WebSearchTool(appConfig.webSearch))
+            }
+        }
+        val mcpManager = McpManager(appConfig.mcpServers, localTools)
         val llmProvider = LLMProviderFactory.create(appConfig.ai, mcpManager)
         val animationModule = AnimationModule()
         val avatarController = DefaultAvatarController(animationModule)

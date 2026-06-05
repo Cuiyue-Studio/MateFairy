@@ -1,6 +1,7 @@
 package com.example.matefairy01.mcp
 
 import android.util.Log
+import com.example.matefairy01.tools.LocalTool
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
@@ -18,7 +19,9 @@ import org.json.JSONObject
  *   manager.callTool(wrappedName, argsJson)        // 模型选定工具后路由调用
  */
 class McpManager(
-    configs: List<McpServerConfig>
+    configs: List<McpServerConfig>,
+    /** 进程内本地工具，与远程 MCP 工具并列暴露给 LLM */
+    private val localTools: List<LocalTool> = emptyList()
 ) {
     companion object {
         private const val TAG = "McpManager"
@@ -34,6 +37,9 @@ class McpManager(
 
     /** 是否有任何配置过的 MCP Server */
     val hasAnyServer: Boolean get() = clients.isNotEmpty()
+
+    /** 是否存在任何工具来源（MCP server 或本地工具）。决定是否尝试进入工具模式 */
+    val hasAnyToolSource: Boolean get() = clients.isNotEmpty() || localTools.isNotEmpty()
 
     /**
      * 并发初始化所有 MCP Server，单个失败不影响其它。幂等。
@@ -70,12 +76,13 @@ class McpManager(
         clients.values.flatMap { it.tools }
 
     /**
-     * 是否存在任何已就绪工具（影响 LLM 是否进入 function calling 流程）
+     * 是否存在任何已就绪工具（影响 LLM 是否进入 function calling 流程）。
+     * 本地工具始终就绪，MCP 工具需连接成功后才计入。
      */
-    fun hasAvailableTools(): Boolean = allTools().isNotEmpty()
+    fun hasAvailableTools(): Boolean = allTools().isNotEmpty() || localTools.isNotEmpty()
 
     /**
-     * 构造 OpenAI / DeepSeek function calling 接口需要的 tools 数组
+     * 构造 OpenAI / DeepSeek function calling 接口需要的 tools 数组（MCP 工具 + 本地工具）
      */
     fun buildToolsJsonForOpenAI(): JSONArray {
         val arr = JSONArray()
@@ -94,13 +101,37 @@ class McpManager(
                 }
             )
         }
+        for (tool in localTools) {
+            arr.put(
+                JSONObject().apply {
+                    put("type", "function")
+                    put(
+                        "function",
+                        JSONObject().apply {
+                            put("name", tool.name)
+                            put("description", tool.description)
+                            put("parameters", tool.parameters)
+                        }
+                    )
+                }
+            )
+        }
         return arr
     }
 
     /**
-     * 按 wrappedName 路由调用一个工具
+     * 按名称路由调用一个工具：优先本地工具，否则按 wrappedName 路由到 MCP server
      */
     suspend fun callTool(wrappedName: String, arguments: JSONObject): String {
+        localTools.firstOrNull { it.name == wrappedName }?.let { local ->
+            return try {
+                local.execute(arguments)
+            } catch (e: Exception) {
+                Log.w(TAG, "local tool '$wrappedName' failed: ${e.message}")
+                "[ERROR] ${e.javaClass.simpleName}: ${e.message ?: "unknown"}"
+            }
+        }
+
         val tool = allTools().firstOrNull { it.wrappedName == wrappedName }
             ?: return "[ERROR] tool '$wrappedName' not found"
         val client = clients[tool.serverName]

@@ -43,11 +43,13 @@ class DeepSeekLLMProvider(
     override suspend fun chat(messages: List<ChatMessage>): AIResponse = withContext(Dispatchers.IO) {
         validateConfig()
 
-        // 工具模式：先确保 MCP 已连接，再判断是否有可用工具
+        // 工具模式：只要有工具来源（MCP server 或本地工具）就尝试进入
         val manager = mcpManager
-        if (manager != null && manager.hasAnyServer) {
-            runCatching { manager.ensureInitialized() }
-                .onFailure { Log.w(TAG, "MCP init failed, fallback to non-tool mode: ${it.message}") }
+        if (manager != null && manager.hasAnyToolSource) {
+            if (manager.hasAnyServer) {
+                runCatching { manager.ensureInitialized() }
+                    .onFailure { Log.w(TAG, "MCP init failed, fallback to non-tool mode: ${it.message}") }
+            }
             if (manager.hasAvailableTools()) {
                 return@withContext chatWithTools(messages, manager)
             }

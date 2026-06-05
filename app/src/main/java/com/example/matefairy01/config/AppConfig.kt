@@ -16,6 +16,7 @@ import org.json.JSONObject
 data class AppConfig(
     val ai: AIConfig = AIConfig(),
     val mcpServers: List<McpServerConfig> = emptyList(),
+    val webSearch: WebSearchConfig = WebSearchConfig(),
     val memory: MemoryConfig = MemoryConfig()
 )
 
@@ -52,6 +53,29 @@ data class DeepSeekConfig(
     val temperature: Double = 0.7
 )
 
+/**
+ * 联网搜索工具配置。
+ *
+ * 对应 app_config.json:
+ * ```
+ * "webSearch": {
+ *   "enabled": true,
+ *   "provider": "duckduckgo",   // duckduckgo | brave | tavily
+ *   "apiKey": "",                 // brave / tavily 需要
+ *   "maxResults": 5
+ * }
+ * ```
+ */
+data class WebSearchConfig(
+    val enabled: Boolean = true,
+    /** duckduckgo（免 key 兜底）| brave | tavily */
+    val provider: String = "duckduckgo",
+    val apiKey: String = "",
+    val maxResults: Int = 5,
+    val connectTimeoutMs: Long = 10_000L,
+    val readTimeoutMs: Long = 15_000L
+)
+
 object AppConfigLoader {
     private const val CONFIG_ASSET_PATH = "app_config.json"
 
@@ -69,6 +93,7 @@ object AppConfigLoader {
             val config = AppConfig(
                 ai = parseAIConfig(root.optJSONObject("ai")),
                 mcpServers = parseMcpServers(root.optJSONObject("mcpServers")),
+                webSearch = parseWebSearchConfig(root.optJSONObject("webSearch")),
                 memory = parseMemoryConfig(root.optJSONObject("memory"))
             )
             cachedConfig = config
@@ -158,8 +183,20 @@ object AppConfigLoader {
         )
     }
 
-    private fun parseMcpServers(json: JSONObject?): List<McpServerConfig> {
-        if (json == null) return emptyList()
+    private fun parseWebSearchConfig(json: JSONObject?): WebSearchConfig {
+        val defaults = WebSearchConfig()
+        if (json == null) return defaults
+        return WebSearchConfig(
+            enabled = json.optBoolean("enabled", defaults.enabled),
+            provider = json.optString("provider", defaults.provider),
+            apiKey = json.optString("apiKey", defaults.apiKey),
+            maxResults = json.optInt("maxResults", defaults.maxResults),
+            connectTimeoutMs = json.optLong("connectTimeoutMs", defaults.connectTimeoutMs),
+            readTimeoutMs = json.optLong("readTimeoutMs", defaults.readTimeoutMs)
+        )
+    }
+
+    private fun parseMcpServers(json: JSONObject?): List<McpServerConfig> {        if (json == null) return emptyList()
         val result = mutableListOf<McpServerConfig>()
         val names = json.keys()
         while (names.hasNext()) {
