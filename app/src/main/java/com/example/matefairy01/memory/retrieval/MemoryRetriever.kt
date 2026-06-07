@@ -3,6 +3,11 @@ package com.example.matefairy01.memory.retrieval
 import android.util.Log
 import com.example.matefairy01.memory.episodic.EpisodicStore
 import com.example.matefairy01.memory.semantic.SemanticStore
+import com.example.matefairy01.ml.IEmbedder
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withTimeout
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -25,7 +30,9 @@ import java.util.Locale
  */
 class MemoryRetriever(
     val episodicStore: EpisodicStore,
-    val semanticStore: SemanticStore
+    val semanticStore: SemanticStore,
+    private val embedder: IEmbedder,
+    private val recallTimeoutMs: Long = 1500L
 ) {
     companion object {
         private const val TAG = "MemoryRetriever"
@@ -34,18 +41,43 @@ class MemoryRetriever(
 
     /**
      * 按 [query] 召回 facts + episodic，组装成 markdown 文本块。
-     * 失败 / 召回为空时返回空串，调用方应判空后再注入 prompt。
+     *
+     * 性能保证（关键路径，回复前必经）：
+     * - query 只 embedding **一次**，向量同时喂给 facts + episodic 检索；
+     * - 两个检索 **并行** 执行；
+     * - 整体包 [recallTimeoutMs] 超时，超时即返回空召回，**绝不阻塞回复**。
+     *
+     * 失败 / 召回为空 / 超时时返回空串，调用方应判空后再注入 prompt。
      */
     suspend fun assembleContext(query: String): String {
         if (query.isBlank()) return ""
 
-        val factsResult = runCatching { semanticStore.searchFacts(query) }
-            .onFailure { Log.w(TAG, "searchFacts failed: ${it.message}") }
-            .getOrDefault(emptyList())
+        val (factsResult, episodesResult) = try {
+            withTimeout(recallTimeoutMs) {
+                // 1. 一次 embedding，复用给两个检索
+                val qVec = runCatching { embedder.encode(query) }
+                    .onFailure { Log.w(TAG, "embed query failed: ${it.message}") }
+                    .getOrNull()
 
-        val episodesResult = runCatching { episodicStore.search(query) }
-            .onFailure { Log.w(TAG, "searchEpisodic failed: ${it.message}") }
-            .getOrDefault(emptyList())
+                // 2. facts + episodic 并行
+                coroutineScope {
+                    val factsDeferred = async {
+                        runCatching { semanticStore.searchFactsByVector(qVec) }
+                            .onFailure { Log.w(TAG, "searchFacts failed: ${it.message}") }
+                            .getOrDefault(emptyList())
+                    }
+                    val episodesDeferred = async {
+                        runCatching { episodicStore.searchByVector(qVec) }
+                            .onFailure { Log.w(TAG, "searchEpisodic failed: ${it.message}") }
+                            .getOrDefault(emptyList())
+                    }
+                    Pair(factsDeferred.await(), episodesDeferred.await())
+                }
+            }
+        } catch (e: TimeoutCancellationException) {
+            Log.w(TAG, "memory recall timeout (${recallTimeoutMs}ms), skip recall")
+            return ""
+        }
 
         val builder = StringBuilder()
 

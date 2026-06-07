@@ -100,7 +100,7 @@ object MateFairyRuntimeFactory {
             recencyScorer = recencyScorer
         )
 
-        val memoryRetriever = MemoryRetriever(episodicStore, semanticStore)
+        val memoryRetriever = MemoryRetriever(episodicStore, semanticStore, embedder)
         val permanentStore = PermanentStore(context.applicationContext).also { it.ensureInitialized() }
 
         // ----- 写入流水线 -----

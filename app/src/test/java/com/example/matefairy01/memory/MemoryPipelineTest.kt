@@ -141,7 +141,7 @@ class MemoryPipelineTest {
         semanticStore.addFact("preference", "用户喜欢喝美式咖啡", confidence = 0.9f)
         episodicStore.add("我们讨论了几家精品咖啡店", timestamp = now, importance = 6)
 
-        val retriever = MemoryRetriever(episodicStore, semanticStore)
+        val retriever = MemoryRetriever(episodicStore, semanticStore, embedder)
         val context = retriever.assembleContext("咖啡")
 
         assertNotNull(context)

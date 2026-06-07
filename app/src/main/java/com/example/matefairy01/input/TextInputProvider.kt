@@ -1,5 +1,6 @@
 package com.example.matefairy01.input
 
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -40,6 +41,7 @@ class TextInputProvider : IUserInputProvider {
     override val inputMode: InputMode = InputMode.TEXT
 
     override fun startListening(onResult: (String) -> Unit) {
+        Log.d("InputControllerManager", "TextInput startListening (dialog open)")
         isActive = true
         resultCallback = onResult
         currentText = ""
@@ -59,6 +61,7 @@ class TextInputProvider : IUserInputProvider {
      * 更新当前输入文本
      */
     fun updateText(text: String) {
+        Log.d("InputControllerManager", "updateText: '$text'")
         currentText = text
         refreshActiveTime()
     }
@@ -67,6 +70,7 @@ class TextInputProvider : IUserInputProvider {
      * 提交当前输入的文本
      */
     fun submitText() {
+        Log.d("InputControllerManager", "submitText: text='$currentText' callbackNull=${resultCallback == null}")
         if (currentText.isNotBlank()) {
             resultCallback?.invoke(currentText.trim())
         }

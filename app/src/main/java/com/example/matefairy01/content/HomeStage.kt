@@ -72,6 +72,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import com.example.matefairy01.memory.permanent.MdTemplates
 
 data class DialogueBubbleState(
     val text: String,
@@ -492,7 +494,9 @@ fun HomeStage() {
             val needUI = textInputProvider.showInputDialog || voiceInputProvider.isListening()
             if (needUI) {
                 AttachmentPanel(id = "user_input_panel") {
-                    GameUIContainer()
+                    GameUIContainer(
+                        onClearMemory = { clearAllMemory(scope, runtime) }
+                    )
                 }
             }
         }
@@ -534,6 +538,30 @@ private const val OCCLUSION_MATERIAL_PATH = "MyScene/Root/MyMaterials/OcclusionM
 private const val HOME_STAGE_TAG = "HomeStage"
 
 /**
+ * 清除所有持久化记忆：L2 情景 + L3 语义（事实/三元组）+ L4 永久层（USER/MEMORY 重置为模板）。
+ * SOUL.md 为人设，不动。
+ */
+private fun clearAllMemory(
+    scope: CoroutineScope,
+    runtime: MateFairyRuntime
+) {
+    scope.launch {
+        runCatching {
+            runtime.episodicStore.deleteAll()
+            runtime.semanticStore.deleteAllFacts()
+            runtime.semanticStore.deleteAllTriples()
+            withContext(Dispatchers.IO) {
+                runtime.permanentStore.writeUser(MdTemplates.USER)
+                runtime.permanentStore.writeMemory(MdTemplates.MEMORY)
+            }
+            Log.d(HOME_STAGE_TAG, "all memory cleared")
+        }.onFailure {
+            Log.e(HOME_STAGE_TAG, "clear memory failed", it)
+        }
+    }
+}
+
+/**
  * 处理用户输入并调用 AI
  */
 private fun handleUserInput(
@@ -544,14 +572,17 @@ private fun handleUserInput(
     onProcessing: (Boolean) -> Unit
 ) {
     scope.launch {
+        android.util.Log.d(HOME_STAGE_TAG, "handleUserInput: '$text'")
         onProcessing(true)
         onDialogueUpdate("思考中...")
 
         try {
             val result = runtime.conversationOrchestrator.processUserInput(text)
+            android.util.Log.d(HOME_STAGE_TAG, "processUserInput done: '${result.replyText}'")
             onDialogueUpdate(result.replyText)
 
         } catch (e: Exception) {
+            android.util.Log.e(HOME_STAGE_TAG, "processUserInput failed", e)
             onDialogueUpdate("抱歉，我遇到了一些问题，请稍后再试。")
         } finally {
             onProcessing(false)

@@ -72,12 +72,25 @@ class SemanticStore(
         category: String? = null
     ): List<Scored<Fact>> {
         if (query.isBlank() || topK <= 0) return emptyList()
+        val qVec = runCatching { embedder.encode(query) }.getOrNull()
+        return searchFactsByVector(qVec, topK, category)
+    }
+
+    /**
+     * 与 [searchFacts] 相同，但接收**已算好的 query 向量**，避免重复 embedding 网络调用。
+     * 供 [com.example.matefairy01.memory.retrieval.MemoryRetriever] 一次编码、多处复用。
+     */
+    suspend fun searchFactsByVector(
+        qVec: FloatArray?,
+        topK: Int = retrievalConfig.topKFacts,
+        category: String? = null
+    ): List<Scored<Fact>> {
+        if (topK <= 0) return emptyList()
 
         val now = System.currentTimeMillis()
         val candidates = factDao.listCandidates(category, DEFAULT_CANDIDATES_LIMIT)
         if (candidates.isEmpty()) return emptyList()
 
-        val qVec = runCatching { embedder.encode(query) }.getOrNull()
         val hasQueryVec = qVec != null && qVec.size == embedder.dimension && hasNonZero(qVec)
 
         val ws = retrievalConfig.weightSimilarity

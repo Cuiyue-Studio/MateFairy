@@ -1,5 +1,6 @@
 package com.example.matefairy01.orchestrator
 
+import android.util.Log
 import com.example.matefairy01.ai.ChatMessage
 import com.example.matefairy01.ai.ILLMProvider
 import com.example.matefairy01.memory.ContextMemorySystem

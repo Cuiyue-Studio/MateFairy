@@ -74,6 +74,15 @@ class EpisodicStore(
      */
     suspend fun search(query: String, topK: Int = retrievalConfig.topKEpisodic): List<Scored<EpisodicEntry>> {
         if (query.isBlank() || topK <= 0) return emptyList()
+        val qVec = runCatching { embedder.encode(query) }.getOrNull()
+        return searchByVector(qVec, topK)
+    }
+
+    /**
+     * 与 [search] 相同，但接收**已算好的 query 向量**，避免重复 embedding 网络调用。
+     */
+    suspend fun searchByVector(qVec: FloatArray?, topK: Int = retrievalConfig.topKEpisodic): List<Scored<EpisodicEntry>> {
+        if (topK <= 0) return emptyList()
 
         val now = System.currentTimeMillis()
         val candidates = dao.recentSince(
@@ -82,7 +91,6 @@ class EpisodicStore(
         )
         if (candidates.isEmpty()) return emptyList()
 
-        val qVec = runCatching { embedder.encode(query) }.getOrNull()
         val hasQueryVec = qVec != null && qVec.size == embedder.dimension && hasNonZero(qVec)
 
         val ws = retrievalConfig.weightSimilarity
