@@ -58,7 +58,15 @@ object AnimationConfig {
     val supportedEmotions: List<String> = (listOf("neutral", "sad", "surprised", "thinking") + 
         FairyAnimation.values().filter { it.type == AnimationType.EMOTION_REACTION }.mapNotNull { it.intent }).distinct()
     
-    val supportedActions: List<String> = (listOf("none", "fetch_ball", "play-football") +
+    val supportedActions: List<String> = (listOf(
+        "none",
+        "fetch_ball",
+        "play-football",
+        "start-boombox",
+        "stop-boombox",
+        "squeeze-rubber-duck",
+        "put-down-rubber-duck"
+    ) +
         FairyAnimation.values().filter { it.type == AnimationType.NON_TASK_ACTION }.mapNotNull { it.intent }).distinct()
 
     fun getAnimationByEmotion(emotion: String): FairyAnimation? {

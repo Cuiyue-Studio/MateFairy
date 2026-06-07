@@ -15,6 +15,10 @@ import com.example.matefairy01.emotion.AvatarEmotionRenderer
 import com.example.matefairy01.emotion.EmotionEngine
 import com.example.matefairy01.interaction.InteractionActionRuntimeDependencies
 import com.example.matefairy01.interaction.PlayFootballActionController
+import com.example.matefairy01.interaction.PutDownRubberDuckActionController
+import com.example.matefairy01.interaction.SqueezeRubberDuckActionController
+import com.example.matefairy01.interaction.StartBoomboxActionController
+import com.example.matefairy01.interaction.StopBoomboxActionController
 import com.example.matefairy01.mcp.McpManager
 import com.example.matefairy01.memory.ContextMemorySystem
 import com.example.matefairy01.memory.db.DbProvider
@@ -62,11 +66,17 @@ object MateFairyRuntimeFactory {
         InteractionActionRuntimeDependencies.lockState.addListener(animationModule)
         InteractionActionRuntimeDependencies.lockState.addListener(FairyFollowControlModule)
         val avatarController = DefaultAvatarController(animationModule)
-        val musicModule = MusicModule(context)
+        val musicModule = MusicModule(context).apply {
+            setSpatialMusicPlaylist(BOOMBOX_SPATIAL_MUSIC_PLAYLIST)
+        }
 
         val emotionRenderer = AvatarEmotionRenderer(animationModule)
         val emotionEngine = EmotionEngine(emotionRenderer)
         InteractionActionRuntimeDependencies.actionRegistry.register(PlayFootballActionController())
+        InteractionActionRuntimeDependencies.actionRegistry.register(StartBoomboxActionController(musicModule))
+        InteractionActionRuntimeDependencies.actionRegistry.register(StopBoomboxActionController(musicModule))
+        InteractionActionRuntimeDependencies.actionRegistry.register(SqueezeRubberDuckActionController(musicModule))
+        InteractionActionRuntimeDependencies.actionRegistry.register(PutDownRubberDuckActionController())
 
         val actionRegistry = ActionRegistry().apply {
             AnimationConfig.supportedActions.filter { it != "none" }.forEach { intent ->
@@ -77,6 +87,34 @@ object MateFairyRuntimeFactory {
                     intent = PlayFootballActionController.ACTION_ID,
                     requestBus = InteractionActionRuntimeDependencies.requestBus,
                     defaultObjectIds = listOf("football")
+                )
+            )
+            register(
+                SceneInteractionActionHandler(
+                    intent = StartBoomboxActionController.ACTION_ID,
+                    requestBus = InteractionActionRuntimeDependencies.requestBus,
+                    defaultObjectIds = listOf(StartBoomboxActionController.DEFAULT_OBJECT_ID)
+                )
+            )
+            register(
+                SceneInteractionActionHandler(
+                    intent = StopBoomboxActionController.ACTION_ID,
+                    requestBus = InteractionActionRuntimeDependencies.requestBus,
+                    defaultObjectIds = listOf(StartBoomboxActionController.DEFAULT_OBJECT_ID)
+                )
+            )
+            register(
+                SceneInteractionActionHandler(
+                    intent = SqueezeRubberDuckActionController.ACTION_ID,
+                    requestBus = InteractionActionRuntimeDependencies.requestBus,
+                    defaultObjectIds = listOf(SqueezeRubberDuckActionController.DEFAULT_OBJECT_ID)
+                )
+            )
+            register(
+                SceneInteractionActionHandler(
+                    intent = PutDownRubberDuckActionController.ACTION_ID,
+                    requestBus = InteractionActionRuntimeDependencies.requestBus,
+                    defaultObjectIds = listOf(SqueezeRubberDuckActionController.DEFAULT_OBJECT_ID)
                 )
             )
         }
@@ -157,4 +195,9 @@ object MateFairyRuntimeFactory {
             musicModule = musicModule
         )
     }
+
+    private val BOOMBOX_SPATIAL_MUSIC_PLAYLIST = listOf(
+        "Dying_Me_instrumental.wav",
+        "火星时代教育.wav"
+    )
 }

@@ -1,20 +1,27 @@
 package com.example.matefairy01.behavior
 
+import com.example.matefairy01.content.ResourcePhysicsActivationComponent
 import com.pico.spatial.core.ecs.System
 import com.pico.spatial.core.ecs.SceneUpdateContext
 import com.pico.spatial.core.ecs.EntityQueryCondition
 import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.ecs.TransformComponent
 import com.pico.spatial.core.ecs.PhysicsForceComponent
+import com.pico.spatial.core.ecs.PhysicsVelocityComponent
+import com.pico.spatial.core.ecs.RigidBodyComponent
 import com.pico.spatial.core.ecs.simulation.CollisionCastHitMode
 import com.pico.spatial.core.ecs.simulation.CollisionGroup
+import com.pico.spatial.core.ecs.simulation.RigidBodyMode
 import com.pico.spatial.core.math.Vector3
 import com.pico.spatial.core.math.EulerAngles
+import com.example.matefairy01.interaction.DEFAULT_FAIRY_ACTOR_ID
 import com.example.matefairy01.interaction.FairyActionLockComponent
+import com.example.matefairy01.interaction.InteractionActorComponent
 import com.example.matefairy01.interaction.InteractionActionRequest
 import com.example.matefairy01.interaction.InteractionActionRuntimeDependencies
 import com.example.matefairy01.interaction.InteractionActionSource
 import com.example.matefairy01.interaction.InteractionEntityResolver
+import com.example.matefairy01.interaction.PickedObjectFollowComponent
 import com.example.matefairy01.interaction.PlayFootballActionController
 import com.example.matefairy01.interaction.PlayFootballPreconditions
 import kotlin.math.atan2
@@ -27,6 +34,8 @@ class FairyBehaviorSystem : System() {
     private val hmdCondition = EntityQueryCondition.hasComponent(HMDTagComponent::class.java)
     private val fairyCondition =
         EntityQueryCondition.hasComponent(FairyBehaviorComponent::class.java)
+    private val pickedCondition =
+        EntityQueryCondition.hasComponent(PickedObjectFollowComponent::class.java)
 
     private var cachedHmdEntity: Entity? = null
     private var cachedFairyEntities: List<Entity> = emptyList()
@@ -254,6 +263,25 @@ class FairyBehaviorSystem : System() {
                 }
             }
 
+            val isCarryingObject = isCarryingObject(context, fairyEntity)
+            if (isCarryingObject) {
+                applyCarryingDirectMotion(
+                    fairyEntity = fairyEntity,
+                    behavior = behavior,
+                    transform = transform,
+                    physicsForce = physicsForce,
+                    dt = dt
+                )
+                visualTransform.position = transform.position
+                val pitch = if (behavior.hasRecordedInitialRotation) behavior.initialPitch else 0f
+                val roll = if (behavior.hasRecordedInitialRotation) behavior.initialRoll else 0f
+                visualTransform.eulerAngles = EulerAngles(pitch = pitch, yaw = behavior.currentYaw, roll = roll)
+                behavior.lastPosition = transform.position
+                behavior.hasRecordedLastPosition = true
+                continue
+            }
+            restoreNormalFairyPhysics(fairyEntity)
+
             // Apply physics force
             if (physicsForce != null) {
                 physicsForce.force = totalForce
@@ -269,6 +297,55 @@ class FairyBehaviorSystem : System() {
             visualTransform.eulerAngles = EulerAngles(pitch = pitch, yaw = behavior.currentYaw, roll = roll)
         }
         wasFollowEnabled = followEnabled
+    }
+
+    private fun isCarryingObject(context: SceneUpdateContext, fairyEntity: Entity): Boolean {
+        val actorId = fairyEntity.components[InteractionActorComponent::class.java]?.actorId
+            ?: DEFAULT_FAIRY_ACTOR_ID
+        return context.scene.queryEntity(pickedCondition).any { picked ->
+            picked.components[PickedObjectFollowComponent::class.java]?.holderActorId == actorId
+        }
+    }
+
+    private fun applyCarryingDirectMotion(
+        fairyEntity: Entity,
+        behavior: FairyBehaviorComponent,
+        transform: TransformComponent,
+        physicsForce: PhysicsForceComponent?,
+        dt: Float
+    ) {
+        physicsForce?.force = Vector3.ZERO
+        fairyEntity.components[RigidBodyComponent::class.java]?.let { rigidBody ->
+            rigidBody.rigidBodyMode = RigidBodyMode.KINEMATIC
+            rigidBody.isAffectedByGravity = false
+        }
+        fairyEntity.components[PhysicsVelocityComponent::class.java]?.linearVelocity = Vector3.ZERO
+        val target = behavior.currentTarget ?: return
+        val direction = direction(transform.position, target) ?: return
+        val speed = when (behavior.state) {
+            FairyState.FOLLOWING -> behavior.followSpeed
+            FairyState.RANDOM_MOVING -> behavior.speed
+            FairyState.RANDOM_WAITING,
+            FairyState.FOLLOW_HOVERING -> 0.35f
+        }.coerceAtMost(MAX_CARRYING_DIRECT_SPEED)
+        val distanceToTarget = distance(transform.position, target)
+        val step = (speed * dt).coerceAtMost(distanceToTarget)
+        transform.position = Vector3(
+            transform.position.x + direction.x * step,
+            transform.position.y + direction.y * step,
+            transform.position.z + direction.z * step
+        )
+        if (direction.x != 0f || direction.z != 0f) {
+            val targetYaw = atan2(direction.x, direction.z).toDegrees()
+            behavior.currentYaw = lerpAngle(behavior.currentYaw, targetYaw, 5.0f * dt)
+        }
+    }
+
+    private fun restoreNormalFairyPhysics(fairyEntity: Entity) {
+        fairyEntity.components[RigidBodyComponent::class.java]?.let { rigidBody ->
+            rigidBody.rigidBodyMode = RigidBodyMode.DYNAMIC
+            rigidBody.isAffectedByGravity = false
+        }
     }
 
     private fun getRandomTargetInInnerRadius(hmdPos: Vector3, innerRadius: Float, hoverHeight: Float, zDeviationRange: Float): Vector3 {
@@ -323,7 +400,10 @@ class FairyBehaviorSystem : System() {
         if (InteractionActionRuntimeDependencies.lockState.isLocked) return false
         if (Random.nextFloat() > RANDOM_PLAY_FOOTBALL_CHANCE) return false
         val football = InteractionEntityResolver.findObject(context.scene, "football") ?: return false
+        val activation = football.components[ResourcePhysicsActivationComponent::class.java]
+        if (activation != null && !activation.activated) return false
         val footballTransform = football.components[TransformComponent::class.java] ?: return false
+        if (footballTransform.position.y < MIN_RANDOM_ACTION_TARGET_Y) return false
         val footballDistance = horizontalDistance(fairyPos, footballTransform.position)
         PlayFootballPreconditions.updateHorizontalDistance(footballDistance)
         if (footballDistance > PlayFootballPreconditions.MAX_HORIZONTAL_DISTANCE_METERS) {
@@ -390,6 +470,22 @@ class FairyBehaviorSystem : System() {
         return sqrt(dx * dx + dz * dz)
     }
 
+    private fun distance(a: Vector3, b: Vector3): Float {
+        val dx = a.x - b.x
+        val dy = a.y - b.y
+        val dz = a.z - b.z
+        return sqrt(dx * dx + dy * dy + dz * dz)
+    }
+
+    private fun direction(from: Vector3, to: Vector3): Vector3? {
+        val dx = to.x - from.x
+        val dy = to.y - from.y
+        val dz = to.z - from.z
+        val length = sqrt(dx * dx + dy * dy + dz * dz)
+        if (length <= 0.001f) return null
+        return Vector3(dx / length, dy / length, dz / length)
+    }
+
     private fun resolveHmdEntity(context: SceneUpdateContext): Entity? {
         val cached = cachedHmdEntity
         if (cached != null &&
@@ -420,5 +516,7 @@ class FairyBehaviorSystem : System() {
     private companion object {
         private const val RANDOM_PLAY_FOOTBALL_CHANCE = 0.18f
         private const val RANDOM_ACTION_MIN_WAIT_SECONDS = 1.5f
+        private const val MIN_RANDOM_ACTION_TARGET_Y = -0.5f
+        private const val MAX_CARRYING_DIRECT_SPEED = 0.65f
     }
 }

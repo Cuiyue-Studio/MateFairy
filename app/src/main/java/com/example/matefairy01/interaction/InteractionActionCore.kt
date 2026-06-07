@@ -46,7 +46,8 @@ data class InteractionActionRequest(
 
 enum class InteractionActionSource {
     RANDOM,
-    DIALOGUE
+    DIALOGUE,
+    DEBUG
 }
 
 enum class InteractionActionStatus {
@@ -101,7 +102,8 @@ class InteractionActionRequestBus {
     @Synchronized
     fun enqueue(request: InteractionActionRequest): Boolean {
         if (request.actionId.isBlank()) return false
-        if (InteractionActionRuntimeDependencies.lockState.isLocked) {
+        val lockState = InteractionActionRuntimeDependencies.lockState
+        if (lockState.isLocked && !lockState.canPreempt(request)) {
             Log.d(TAG, "Ignore action=${request.actionId}; action lock is active")
             return false
         }
@@ -157,6 +159,15 @@ class InteractionActionLockState {
     }
 
     @Synchronized
+    fun canPreempt(request: InteractionActionRequest): Boolean {
+        val source = currentSource ?: return false
+        if (request.source.priority > source.priority) return true
+        return request.source == InteractionActionSource.DEBUG &&
+            source == InteractionActionSource.DEBUG &&
+            request.controllerId != currentControllerId
+    }
+
+    @Synchronized
     fun release(controllerId: String, status: InteractionActionStatus) {
         if (currentControllerId != controllerId) return
         val actionId = currentActionId ?: return
@@ -180,6 +191,13 @@ class InteractionActionLockState {
         subscriptions.removeAll { it.listener == listener }
     }
 }
+
+private val InteractionActionSource.priority: Int
+    get() = when (this) {
+        InteractionActionSource.RANDOM -> 0
+        InteractionActionSource.DIALOGUE -> 1
+        InteractionActionSource.DEBUG -> 2
+    }
 
 object InteractionActionRuntimeDependencies {
     val actionRegistry = InteractionActionRegistry()

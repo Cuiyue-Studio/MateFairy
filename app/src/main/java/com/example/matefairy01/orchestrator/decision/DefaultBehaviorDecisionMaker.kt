@@ -1,6 +1,10 @@
 package com.example.matefairy01.orchestrator.decision
 
 import com.example.matefairy01.interaction.PlayFootballActionController
+import com.example.matefairy01.interaction.PutDownRubberDuckActionController
+import com.example.matefairy01.interaction.SqueezeRubberDuckActionController
+import com.example.matefairy01.interaction.StartBoomboxActionController
+import com.example.matefairy01.interaction.StopBoomboxActionController
 
 /**
  * 默认的行为决策器实现
@@ -14,7 +18,13 @@ class DefaultBehaviorDecisionMaker : BehaviorDecisionMaker {
 
     // 预设的高优先级情绪列表
     private val highPriorityEmotions = setOf("angry", "sad")
-    private val actionClassIntents = setOf(PlayFootballActionController.ACTION_ID)
+    private val actionClassIntents = setOf(
+        PlayFootballActionController.ACTION_ID,
+        StartBoomboxActionController.ACTION_ID,
+        StopBoomboxActionController.ACTION_ID,
+        SqueezeRubberDuckActionController.ACTION_ID,
+        PutDownRubberDuckActionController.ACTION_ID
+    )
 
     override fun decide(
         emotion: String,

@@ -28,6 +28,21 @@ class MockLLMProvider : ILLMProvider {
                 lastUserMessage.contains("football", ignoreCase = true) -> {
                 Triple("好呀，我去和足球玩一下！", "neutral", "play-football")
             }
+            lastUserMessage.contains("关闭音响") || lastUserMessage.contains("停止音乐") ||
+                lastUserMessage.contains("关掉音响") || lastUserMessage.contains("关掉boombox", ignoreCase = true) -> {
+                Triple("好，我去把音响关掉。", "neutral", "stop-boombox")
+            }
+            lastUserMessage.contains("打开音响") || lastUserMessage.contains("启动音响") ||
+                lastUserMessage.contains("播放音乐") || lastUserMessage.contains("boombox", ignoreCase = true) -> {
+                Triple("好呀，我去打开音响！", "happy", "start-boombox")
+            }
+            lastUserMessage.contains("放下小黄鸭") || lastUserMessage.contains("放下鸭子") -> {
+                Triple("好，我把小黄鸭放下来。", "neutral", "put-down-rubber-duck")
+            }
+            lastUserMessage.contains("捏小黄鸭") || lastUserMessage.contains("挤小黄鸭") ||
+                lastUserMessage.contains("让鸭子叫") || lastUserMessage.contains("rubber duck", ignoreCase = true) -> {
+                Triple("好呀，我去捏捏小黄鸭！", "happy", "squeeze-rubber-duck")
+            }
             lastUserMessage.contains("hello", ignoreCase = true) ||
             lastUserMessage.contains("hi", ignoreCase = true) ||
             lastUserMessage.contains("你好", ignoreCase = true) -> {

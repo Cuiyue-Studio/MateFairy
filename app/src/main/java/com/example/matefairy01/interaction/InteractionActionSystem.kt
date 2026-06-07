@@ -12,6 +12,17 @@ class InteractionActionSystem : System() {
 
     override fun update(context: SceneUpdateContext) {
         InteractionActionRuntimeDependencies.requestBus.drain().forEach { request ->
+            if (InteractionActionRuntimeDependencies.lockState.canPreempt(request)) {
+                val preemptedControllerId = InteractionActionRuntimeDependencies.lockState.currentControllerId
+                val preemptedActionId = InteractionActionRuntimeDependencies.lockState.currentActionId
+                if (preemptedControllerId != null) {
+                    activeActions.remove(preemptedControllerId)?.cancel()
+                    InteractionActionRuntimeDependencies.lockState.release(
+                        preemptedControllerId,
+                        InteractionActionStatus.FAILED
+                    )
+                }
+            }
             if (!InteractionActionRuntimeDependencies.lockState.tryLock(request)) {
                 Log.d(TAG, "Ignore action=${request.actionId}; another action is running")
                 return@forEach
