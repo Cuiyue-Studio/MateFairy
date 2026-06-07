@@ -76,4 +76,15 @@ class MockLLMProvider : ILLMProvider {
         delay(500)
         return "Summary of previous conversation about various topics."
     }
+
+    override suspend fun complete(
+        systemPrompt: String,
+        userMessage: String,
+        maxTokens: Int?,
+        temperature: Double?
+    ): String {
+        delay(200)
+        // Mock 模式：返回一个不会触发抽取也不引发矛盾检测的安全回复
+        return "{\"facts\": []}"
+    }
 }

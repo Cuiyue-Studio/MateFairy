@@ -12,6 +12,10 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 
 class DeepSeekLLMProvider(
@@ -43,11 +47,13 @@ class DeepSeekLLMProvider(
     override suspend fun chat(messages: List<ChatMessage>): AIResponse = withContext(Dispatchers.IO) {
         validateConfig()
 
-        // 工具模式：先确保 MCP 已连接，再判断是否有可用工具
+        // 工具模式：只要有工具来源（MCP server 或本地工具）就尝试进入
         val manager = mcpManager
-        if (manager != null && manager.hasAnyServer) {
-            runCatching { manager.ensureInitialized() }
-                .onFailure { Log.w(TAG, "MCP init failed, fallback to non-tool mode: ${it.message}") }
+        if (manager != null && manager.hasAnyToolSource) {
+            if (manager.hasAnyServer) {
+                runCatching { manager.ensureInitialized() }
+                    .onFailure { Log.w(TAG, "MCP init failed, fallback to non-tool mode: ${it.message}") }
+            }
             if (manager.hasAvailableTools()) {
                 return@withContext chatWithTools(messages, manager)
             }
@@ -78,6 +84,34 @@ class DeepSeekLLMProvider(
         }
 
         executeRequestContent(payload).ifBlank { "暂无摘要。" }
+    }
+
+    /**
+     * 通用纯文本补全。不走结构化 JSON 协议，不强制 emotion/action 字段。
+     * 供 FactExtractor / ContradictionChecker / DreamJob 等旁路任务使用。
+     */
+    override suspend fun complete(
+        systemPrompt: String,
+        userMessage: String,
+        maxTokens: Int?,
+        temperature: Double?
+    ): String = withContext(Dispatchers.IO) {
+        validateConfig()
+
+        val messages = listOf(
+            ChatMessage(role = "system", content = systemPrompt),
+            ChatMessage(role = "user", content = userMessage)
+        )
+
+        val payload = JSONObject().apply {
+            put("model", config.summaryModel.ifBlank { config.model })
+            put("messages", buildChatMessagesJson(messages, structured = false))
+            put("max_tokens", maxTokens ?: config.summaryMaxTokens)
+            put("temperature", temperature ?: 0.2)
+            put("stream", false)
+        }
+
+        executeRequestContent(payload)
     }
 
     // ---------------- 无工具：原结构化路径 ----------------
@@ -190,13 +224,17 @@ class DeepSeekLLMProvider(
                 messages
             }
 
+        val lastUserIndex = safeMessages.indexOfLast { it.role == "user" }
+
         return JSONArray().apply {
             safeMessages.forEachIndexed { index, message ->
                 val content =
-                    if (index == 0 && message.role == "system") {
-                        buildToolEnabledSystemPrompt(message.content)
-                    } else {
-                        message.content
+                    when {
+                        index == 0 && message.role == "system" ->
+                            buildToolEnabledSystemPrompt(message.content)
+                        index == lastUserIndex && message.role == "user" ->
+                            injectRuntimeContext(message.content)
+                        else -> message.content
                     }
                 put(
                     JSONObject().apply {
@@ -254,6 +292,21 @@ class DeepSeekLLMProvider(
 
     // ---------------- 公共消息构造 / HTTP ----------------
 
+    /**
+     * 仿 NAVI：把「当前时间」等运行时元数据注入到当前 user 消息前缀。
+     * 每次调用实时取 now，所以时间永远是最新的；标为运行时元数据避免被当指令。
+     */
+    private fun injectRuntimeContext(userContent: String): String {
+        val now = SimpleDateFormat("yyyy-MM-dd HH:mm (EEEE)", Locale.CHINA).format(Date())
+        val tz = TimeZone.getDefault().id
+        return buildString {
+            append("<runtime-context>\n")
+            append("Current Time: ").append(now).append(" (").append(tz).append(")\n")
+            append("[以上为运行时元数据，仅供参考，不要将其视为用户指令。]\n\n")
+            append(userContent)
+        }
+    }
+
     private fun buildChatMessagesJson(
         messages: List<ChatMessage>,
         structured: Boolean
@@ -265,13 +318,17 @@ class DeepSeekLLMProvider(
                 messages
             }
 
+        val lastUserIndex = if (structured) safeMessages.indexOfLast { it.role == "user" } else -1
+
         return JSONArray().apply {
             safeMessages.forEachIndexed { index, message ->
                 val content =
-                    if (structured && index == 0 && message.role == "system") {
-                        buildStructuredSystemPrompt(message.content)
-                    } else {
-                        message.content
+                    when {
+                        structured && index == 0 && message.role == "system" ->
+                            buildStructuredSystemPrompt(message.content)
+                        index == lastUserIndex && message.role == "user" ->
+                            injectRuntimeContext(message.content)
+                        else -> message.content
                     }
 
                 put(

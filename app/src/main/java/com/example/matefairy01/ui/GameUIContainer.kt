@@ -6,6 +6,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -19,9 +23,11 @@ import com.pico.spatial.ui.platform.Material
 import kotlinx.coroutines.delay
 
 @Composable
-fun GameUIContainer() {
+fun GameUIContainer(onClearMemory: () -> Unit = {}) {
     val textInputProvider = SharedUIManager.textInputProvider
     val voiceInputProvider = SharedUIManager.voiceInputProvider
+
+    var showClearConfirm by remember { mutableStateOf(false) }
 
     // 10s 超时检测逻辑
     LaunchedEffect(textInputProvider.showInputDialog, textInputProvider.lastActiveTime) {
@@ -56,16 +62,34 @@ fun GameUIContainer() {
                         .background(Color.Transparent),
                     contentAlignment = Alignment.Center
                 ) {
-                    FairyDialogueUI.TextInputDialog(
-                        text = textInputProvider.currentText,
-                        onTextChange = { textInputProvider.updateText(it) },
-                        onSubmit = { 
-                            textInputProvider.submitText()
-                        },
-                        onCancel = { 
-                            textInputProvider.cancelInput()
-                        }
-                    )
+                    if (showClearConfirm) {
+                        FairyDialogueUI.ConfirmDialog(
+                            title = "清除所有记忆",
+                            message = "将删除全部情景、事实与永久记忆（人设保留），此操作不可恢复。确认继续？",
+                            confirmText = "确认清除",
+                            cancelText = "取消",
+                            onConfirm = {
+                                showClearConfirm = false
+                                onClearMemory()
+                            },
+                            onCancel = { showClearConfirm = false }
+                        )
+                    } else {
+                        FairyDialogueUI.TextInputDialog(
+                            text = textInputProvider.currentText,
+                            onTextChange = { textInputProvider.updateText(it) },
+                            onSubmit = {
+                                textInputProvider.submitText()
+                            },
+                            onCancel = {
+                                textInputProvider.cancelInput()
+                            },
+                            onClearMemory = {
+                                android.util.Log.d("InputControllerManager", "clear memory button tapped")
+                                showClearConfirm = true
+                            }
+                        )
+                    }
                 }
 
                 // 悬浮在输入框下方的关闭按钮（毛玻璃材质）

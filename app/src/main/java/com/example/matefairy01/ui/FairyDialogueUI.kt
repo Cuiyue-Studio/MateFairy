@@ -3,6 +3,8 @@ package com.example.matefairy01.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -42,7 +44,8 @@ object FairyDialogueUI {
         text: String,
         onTextChange: (String) -> Unit,
         onSubmit: () -> Unit,
-        onCancel: () -> Unit
+        onCancel: () -> Unit,
+        onClearMemory: () -> Unit = {}
     ) {
         Box(
             modifier = Modifier
@@ -82,11 +85,20 @@ object FairyDialogueUI {
                     modifier = Modifier.fillMaxWidth(),
                     contentAlignment = Alignment.CenterEnd
                 ) {
-                    Button(
-                        onClick = onSubmit,
-                        enabled = text.isNotBlank()
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("发送")
+                        Button(onClick = onClearMemory) {
+                            Text("清除记忆")
+                        }
+                        Button(
+                            onClick = onSubmit,
+                            enabled = text.isNotBlank()
+                        ) {
+                            Text("发送")
+                        }
                     }
                 }
             }
@@ -123,6 +135,61 @@ object FairyDialogueUI {
                 lineHeight = 34.sp,
                 modifier = Modifier.fillMaxWidth()
             )
+        }
+    }
+
+    /**
+     * 通用确认弹窗（用于危险操作二次确认，如清除记忆）
+     */
+    @Composable
+    fun ConfirmDialog(
+        title: String,
+        message: String,
+        confirmText: String = "确认",
+        cancelText: String = "取消",
+        onConfirm: () -> Unit,
+        onCancel: () -> Unit
+    ) {
+        Box(
+            modifier = Modifier
+                .width(520.dp)
+                .clip(RoundedCornerShape(32.dp))
+                .backgroundMaterial(enable = true, style = Material.Regular)
+                .padding(32.dp)
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = title,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = message,
+                    fontSize = 16.sp,
+                    color = Color.White,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(24.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Button(onClick = onCancel) {
+                        Text(cancelText)
+                    }
+                    Button(onClick = onConfirm) {
+                        Text(confirmText)
+                    }
+                }
+            }
         }
     }
 
