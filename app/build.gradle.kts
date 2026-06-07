@@ -44,6 +44,12 @@ android {
         // 如果被压缩，模型无法 mmap 加载，体积虚胖且推理变慢，且不会报错最难排查
         noCompress += listOf("bundle", "glb", "usdz", "wav", "onnx", "json")
     }
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            isReturnDefaultValues = true
+        }
+    }
 }
 
 dependencies {
@@ -69,6 +75,9 @@ dependencies {
     implementation(project(":editor-asset"))
     testImplementation(libs.junit)
     testImplementation("org.json:json:20231013") // 增加 org.json 的 JVM 依赖以供单元测试使用
+    // 记忆系统离线测试：Robolectric 在 JVM 仿真 Android（含 SQLite），让 Room 单测无需模拟器
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     debugImplementation(libs.androidx.ui.tooling.preview)

@@ -12,6 +12,10 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 
 class DeepSeekLLMProvider(
@@ -220,13 +224,17 @@ class DeepSeekLLMProvider(
                 messages
             }
 
+        val lastUserIndex = safeMessages.indexOfLast { it.role == "user" }
+
         return JSONArray().apply {
             safeMessages.forEachIndexed { index, message ->
                 val content =
-                    if (index == 0 && message.role == "system") {
-                        buildToolEnabledSystemPrompt(message.content)
-                    } else {
-                        message.content
+                    when {
+                        index == 0 && message.role == "system" ->
+                            buildToolEnabledSystemPrompt(message.content)
+                        index == lastUserIndex && message.role == "user" ->
+                            injectRuntimeContext(message.content)
+                        else -> message.content
                     }
                 put(
                     JSONObject().apply {
@@ -277,6 +285,21 @@ class DeepSeekLLMProvider(
 
     // ---------------- 公共消息构造 / HTTP ----------------
 
+    /**
+     * 仿 NAVI：把「当前时间」等运行时元数据注入到当前 user 消息前缀。
+     * 每次调用实时取 now，所以时间永远是最新的；标为运行时元数据避免被当指令。
+     */
+    private fun injectRuntimeContext(userContent: String): String {
+        val now = SimpleDateFormat("yyyy-MM-dd HH:mm (EEEE)", Locale.CHINA).format(Date())
+        val tz = TimeZone.getDefault().id
+        return buildString {
+            append("<runtime-context>\n")
+            append("Current Time: ").append(now).append(" (").append(tz).append(")\n")
+            append("[以上为运行时元数据，仅供参考，不要将其视为用户指令。]\n\n")
+            append(userContent)
+        }
+    }
+
     private fun buildChatMessagesJson(
         messages: List<ChatMessage>,
         structured: Boolean
@@ -288,13 +311,17 @@ class DeepSeekLLMProvider(
                 messages
             }
 
+        val lastUserIndex = if (structured) safeMessages.indexOfLast { it.role == "user" } else -1
+
         return JSONArray().apply {
             safeMessages.forEachIndexed { index, message ->
                 val content =
-                    if (structured && index == 0 && message.role == "system") {
-                        buildStructuredSystemPrompt(message.content)
-                    } else {
-                        message.content
+                    when {
+                        structured && index == 0 && message.role == "system" ->
+                            buildStructuredSystemPrompt(message.content)
+                        index == lastUserIndex && message.role == "user" ->
+                            injectRuntimeContext(message.content)
+                        else -> message.content
                     }
 
                 put(

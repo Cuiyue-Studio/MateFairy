@@ -116,6 +116,9 @@ class EmbedderRemote(
             // OpenAI 协议：input 可以是字符串或字符串数组，单条用字符串便于 provider 兼容性
             if (texts.size == 1) put("input", texts.first())
             else put("input", JSONArray().apply { texts.forEach { put(it) } })
+            // 智谱 embedding-3 默认 2048 维，OpenAI text-embedding-3 默认更高；
+            // 显式传 dimensions 让输出维度对齐 config.dimension，避免维度不匹配降级零向量。
+            put("dimensions", config.dimension)
         }.toString()
 
         val request = Request.Builder()

@@ -62,7 +62,7 @@
     "embedding": {
       "provider": "openai_compatible",
       "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
-      "apiKey": "",
+      "apiKey": "c14620451ab84971b13652ff3c2d49cb.zTUL5afq4vPA7Dw5",
       "model": "embedding-3",
       "dimension": 1024,
       "maxLength": 512,
