@@ -1,6 +1,10 @@
 package com.example.matefairy01.animation
 
 import android.util.Log
+import com.example.matefairy01.interaction.InteractionActionListener
+import com.example.matefairy01.interaction.InteractionActionRuntimeDependencies
+import com.example.matefairy01.interaction.InteractionActionSource
+import com.example.matefairy01.interaction.InteractionActionStatus
 import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.ecs.resource.AnimationResource
 import kotlinx.coroutines.*
@@ -12,7 +16,7 @@ import kotlinx.coroutines.*
  * 2. 情绪反应层 (Emotion Reaction): 中优，单次触发，播完降级。
  * 3. 常驻基础层 (Base Idle/Moving): 最低优，永远兜底。
  */
-class AnimationModule : AnimationController {
+class AnimationModule : AnimationController, InteractionActionListener {
     companion object {
         private const val TAG = "AnimationModule"
     }
@@ -47,6 +51,11 @@ class AnimationModule : AnimationController {
      * 对外提供的通用播放接口，内置优先级与序列队列处理
      */
     override fun playAnimation(animation: FairyAnimation) {
+        if (InteractionActionRuntimeDependencies.lockState.isLocked) {
+            Log.d(TAG, "Ignore ${animation.animName}: interaction action lock is active")
+            return
+        }
+
         val resources = animationResources
         if (resources == null) {
             Log.w(TAG, "Ignore ${animation.animName}: animation resources not initialized")
@@ -139,6 +148,7 @@ class AnimationModule : AnimationController {
     }
 
     override fun cleanup() {
+        InteractionActionRuntimeDependencies.lockState.removeListener(this)
         stopAllAnimations()
         moduleScope.cancel()
         animationResources?.forEach { it.close() }
@@ -171,5 +181,22 @@ class AnimationModule : AnimationController {
         val anim = AnimationConfig.movingAnimations.randomOrNull() ?: return null
         playAnimation(anim)
         return anim
+    }
+
+    override fun onActionStarted(
+        actionId: String,
+        controllerId: String,
+        source: InteractionActionSource
+    ) {
+        stopAllAnimations()
+    }
+
+    override fun onActionFinished(
+        actionId: String,
+        controllerId: String,
+        source: InteractionActionSource,
+        status: InteractionActionStatus
+    ) {
+        Log.d(TAG, "Interaction action finished: action=$actionId, status=$status")
     }
 }

@@ -1,6 +1,5 @@
 package com.example.matefairy01.orchestrator
 
-import android.util.Log
 import com.example.matefairy01.ai.ChatMessage
 import com.example.matefairy01.ai.ILLMProvider
 import com.example.matefairy01.memory.ContextMemorySystem
@@ -67,10 +66,6 @@ class ConversationOrchestrator(
         // 改造点：注入 SOUL/USER/recall 到 prompt
         val messages = contextMemorySystem.buildPromptMessages(query = text)
         val response = llmProvider.chat(messages)
-        Log.d(
-            TAG,
-            "LLM response emotion=${response.emotion}, action=${response.action_intent}, reply=${response.reply_text}"
-        )
 
         contextMemorySystem.addMessage(
             ChatMessage(role = "assistant", content = response.reply_text)
@@ -82,11 +77,6 @@ class ConversationOrchestrator(
             actionIntent = response.action_intent,
             originalReply = response.reply_text
         )
-        Log.d(
-            TAG,
-            "Decision emotion=${decision.resolvedEmotion}, action=${decision.resolvedActionIntent}, " +
-                "triggerEmotion=${decision.shouldTriggerEmotion}, dispatchAction=${decision.shouldDispatchAction}"
-        )
 
         // 4. 分发执行
         if (decision.shouldTriggerEmotion) {
@@ -94,20 +84,18 @@ class ConversationOrchestrator(
             emotionPort.triggerEmotion(decision.resolvedEmotion)
         }
 
-        if (decision.shouldDispatchAction) {
-            // 采用 coroutineScope 启动子协程分发动作，避免长动画挂起阻塞当前函数返回，
-            // 从而让 reply_text 能够立刻抛出并显示给用户。
-            coroutineScope {
-                launch {
-                    actionPort.dispatchAction(decision.resolvedActionIntent)
-                }
-            }
+        val actionReplyOverride = if (decision.shouldDispatchAction) {
+            actionPort.dispatchAction(decision.resolvedActionIntent).replyOverride
+        } else {
+            null
         }
 
         // 5. afterReply hook：旁路异步任务，主对话不等
         afterReply(userText = text, replyText = response.reply_text)
 
-        return ConversationResult(replyText = decision.overriddenReplyText ?: response.reply_text)
+        return ConversationResult(
+            replyText = actionReplyOverride ?: decision.overriddenReplyText ?: response.reply_text
+        )
     }
 
     /**

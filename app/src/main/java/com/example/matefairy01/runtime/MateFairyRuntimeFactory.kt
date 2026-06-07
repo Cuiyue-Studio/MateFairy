@@ -3,13 +3,18 @@ package com.example.matefairy01.runtime
 import android.content.Context
 import com.example.matefairy01.action.ActionRegistry
 import com.example.matefairy01.action.handlers.GenericAnimationHandler
+import com.example.matefairy01.action.handlers.SceneInteractionActionHandler
 import com.example.matefairy01.ai.LLMProviderFactory
 import com.example.matefairy01.animation.AnimationConfig
 import com.example.matefairy01.animation.AnimationModule
+import com.example.matefairy01.audio.MusicModule
 import com.example.matefairy01.avatar.DefaultAvatarController
+import com.example.matefairy01.behavior.FairyFollowControlModule
 import com.example.matefairy01.config.AppConfig
 import com.example.matefairy01.emotion.AvatarEmotionRenderer
 import com.example.matefairy01.emotion.EmotionEngine
+import com.example.matefairy01.interaction.InteractionActionRuntimeDependencies
+import com.example.matefairy01.interaction.PlayFootballActionController
 import com.example.matefairy01.mcp.McpManager
 import com.example.matefairy01.memory.ContextMemorySystem
 import com.example.matefairy01.memory.db.DbProvider
@@ -54,13 +59,26 @@ object MateFairyRuntimeFactory {
         val mcpManager = McpManager(appConfig.mcpServers, localTools)
         val llmProvider = LLMProviderFactory.create(appConfig.ai, mcpManager)
         val animationModule = AnimationModule()
+        InteractionActionRuntimeDependencies.lockState.addListener(animationModule)
+        InteractionActionRuntimeDependencies.lockState.addListener(FairyFollowControlModule)
         val avatarController = DefaultAvatarController(animationModule)
+        val musicModule = MusicModule(context)
+
         val emotionRenderer = AvatarEmotionRenderer(animationModule)
         val emotionEngine = EmotionEngine(emotionRenderer)
+        InteractionActionRuntimeDependencies.actionRegistry.register(PlayFootballActionController())
+
         val actionRegistry = ActionRegistry().apply {
             AnimationConfig.supportedActions.filter { it != "none" }.forEach { intent ->
                 register(GenericAnimationHandler(intent, animationModule))
             }
+            register(
+                SceneInteractionActionHandler(
+                    intent = PlayFootballActionController.ACTION_ID,
+                    requestBus = InteractionActionRuntimeDependencies.requestBus,
+                    defaultObjectIds = listOf("football")
+                )
+            )
         }
 
         // ----- 记忆 ML / 持久层 -----
@@ -135,7 +153,8 @@ object MateFairyRuntimeFactory {
             memoryRetriever = memoryRetriever,
             ingestionWorker = ingestionWorker,
             permanentStore = permanentStore,
-            dreamJob = dreamJob
+            dreamJob = dreamJob,
+            musicModule = musicModule
         )
     }
 }

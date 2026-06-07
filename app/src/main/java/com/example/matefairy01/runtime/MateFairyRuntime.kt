@@ -1,6 +1,7 @@
 package com.example.matefairy01.runtime
 
 import com.example.matefairy01.animation.AnimationModule
+import com.example.matefairy01.audio.MusicModule
 import com.example.matefairy01.avatar.AvatarController
 import com.example.matefairy01.mcp.McpManager
 import com.example.matefairy01.memory.db.MateFairyDatabase
@@ -29,5 +30,6 @@ data class MateFairyRuntime(
     val memoryRetriever: MemoryRetriever,
     val ingestionWorker: IngestionWorker,
     val permanentStore: PermanentStore,
-    val dreamJob: DreamJob
+    val dreamJob: DreamJob,
+    val musicModule: MusicModule
 )

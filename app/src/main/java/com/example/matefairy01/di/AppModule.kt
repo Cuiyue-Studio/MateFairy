@@ -49,4 +49,8 @@ object AppModule {
     /** MCP 工具管理器：暴露用于 debug 或健康检查 */
     val mcpManager: McpManager
         get() = requireRuntime().mcpManager
+
+    /** 音乐模块：用于全局播放背景音乐等 */
+    val musicModule: com.example.matefairy01.audio.MusicModule
+        get() = requireRuntime().musicModule
 }

@@ -19,6 +19,15 @@ class MockLLMProvider : ILLMProvider {
 
         // 根据用户输入生成简单的模拟回复
         val (replyText, emotion, actionIntent) = when {
+            (lastUserMessage.contains("废物") || lastUserMessage.contains("蠢") ||
+                lastUserMessage.contains("垃圾")) &&
+                (lastUserMessage.contains("踢球") || lastUserMessage.contains("足球")) -> {
+                Triple("你这样说太过分了！我才不要照你说的做！", "angry", "play-football")
+            }
+            lastUserMessage.contains("踢球") || lastUserMessage.contains("足球") ||
+                lastUserMessage.contains("football", ignoreCase = true) -> {
+                Triple("好呀，我去和足球玩一下！", "neutral", "play-football")
+            }
             lastUserMessage.contains("hello", ignoreCase = true) ||
             lastUserMessage.contains("hi", ignoreCase = true) ||
             lastUserMessage.contains("你好", ignoreCase = true) -> {

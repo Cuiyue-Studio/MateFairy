@@ -1,33 +1,32 @@
 package com.example.matefairy01.perception
 
 import android.os.Handler
+import android.util.Log
 import com.pico.spatial.core.ecs.CollisionComponent
 import com.pico.spatial.core.ecs.Entity
-import com.pico.spatial.core.ecs.ModelComponent
 import com.pico.spatial.core.ecs.TransformComponent
+import com.pico.spatial.core.ecs.resource.Material
 import com.pico.spatial.core.ecs.resource.MeshResource
 import com.pico.spatial.core.ecs.resource.PhysicsMaterialResource
-import com.pico.spatial.core.ecs.resource.PolygonFillMode
 import com.pico.spatial.core.ecs.resource.ShapeResource
-import com.pico.spatial.core.ecs.resource.UnlitMaterial
 import com.pico.spatial.core.ecs.simulation.CollisionFilter
 import com.pico.spatial.core.ecs.simulation.CollisionInfoDetailLevel
 import com.pico.spatial.core.ecs.simulation.CollisionResponseMode
 import com.pico.spatial.core.lifecycle.Cancellable
-import com.pico.spatial.core.math.Color4
 import com.pico.spatial.sense.base.AnchorUpdate
 import com.pico.spatial.sense.mesh.MeshAnchor
 import com.pico.spatial.sense.mesh.MeshTrackingManager
 import java.util.UUID
 
-class SpatialMeshManager(
-    private val mainHandler: Handler
-) {
-    private val meshEntities = mutableMapOf<UUID, Entity>()
-    private var subscription: Cancellable? = null
+class SpatialMeshManager(private val mainHandler: Handler) {
     private var parentEntity: Entity? = null
-    var isScanning: Boolean = false
-        private set
+    private var subscription: Cancellable? = null
+    private var occlusionMaterial: Material? = null
+    private val meshEntities = mutableMapOf<UUID, Entity>()
+
+    fun setOcclusionMaterial(material: Material?) {
+        occlusionMaterial = material
+    }
 
     fun start(parentEntity: Entity) {
         this.parentEntity = parentEntity
@@ -36,19 +35,14 @@ class SpatialMeshManager(
                 mainHandler.post { handleAnchorUpdate(update) }
             }
         }
-        if (!isScanning) {
-            MeshTrackingManager.start()
-            isScanning = true
-        }
+        MeshTrackingManager.start()
     }
 
     fun stop(clearMeshes: Boolean = false) {
-        if (isScanning) {
-            MeshTrackingManager.stop()
-            isScanning = false
-        }
+        runCatching { MeshTrackingManager.stop() }
+            .onFailure { Log.w(TAG, "Failed to stop mesh tracking", it) }
         if (clearMeshes) {
-            clear()
+            clearMeshEntities()
         }
     }
 
@@ -56,6 +50,7 @@ class SpatialMeshManager(
         stop(clearMeshes = true)
         subscription?.cancel()
         subscription = null
+        occlusionMaterial = null
         parentEntity = null
     }
 
@@ -65,47 +60,50 @@ class SpatialMeshManager(
             AnchorUpdate.Event.UPDATED,
             AnchorUpdate.Event.LOADED -> upsertMeshEntity(update.anchor)
             AnchorUpdate.Event.REMOVED -> removeMeshEntity(update.anchor.anchorUUID)
-            else -> Unit
         }
     }
 
     private fun upsertMeshEntity(anchor: MeshAnchor) {
         val parent = parentEntity ?: return
-        removeMeshEntity(anchor.anchorUUID)
+        val existing = meshEntities.remove(anchor.anchorUUID)
+        existing?.destroy()
 
-        val mesh = MeshResource.loadFromMeshAnchor(anchor.anchorUUID)
-        val shape = ShapeResource.createStaticMesh(mesh)
-        val debugMaterial = UnlitMaterial.create().apply {
-            setBaseColor(Color4(0.1f, 1.0f, 0.55f, 0.75f))
-            setPolygonFillMode(PolygonFillMode.LINE)
-        }
-        val entity = Entity().apply {
-            components[TransformComponent::class.java]?.apply {
-                position = anchor.transform.position
-                quaternion = anchor.transform.quaternion
-            }
-            components.set(ModelComponent(mesh, debugMaterial))
-            components.set(
-                CollisionComponent(
-                    collisionShape = listOf(shape),
-                    physicsMaterial = PhysicsMaterialResource(),
-                    collisionResponseMode = CollisionResponseMode.COLLIDER_FULL,
-                    collisionFilter = CollisionFilter.COLLISION_FILTER_DEFAULT,
-                    collisionInfoDetailLevel = CollisionInfoDetailLevel.BRIEF
+        runCatching {
+            val mesh = MeshResource.loadFromMeshAnchor(anchor.anchorUUID)
+            val shape = ShapeResource.createStaticMesh(mesh)
+            Entity().apply {
+                components[TransformComponent::class.java]?.apply {
+                    setPosition(parent.convertPositionFrom(anchor.transform.position, null))
+                    setQuaternion(parent.convertRotationFrom(anchor.transform.rotation.toQuat(), null))
+                }
+                components.set(
+                    CollisionComponent(
+                        collisionShape = listOf(shape),
+                        physicsMaterial = PhysicsMaterialResource(),
+                        collisionResponseMode = CollisionResponseMode.COLLIDER_FULL,
+                        collisionFilter = CollisionFilter.COLLISION_FILTER_DEFAULT,
+                        collisionInfoDetailLevel = CollisionInfoDetailLevel.BRIEF
+                    )
                 )
-            )
+            }
+        }.onSuccess { entity ->
+            parent.addChild(entity)
+            meshEntities[anchor.anchorUUID] = entity
+        }.onFailure {
+            Log.w(TAG, "Failed to upsert mesh anchor ${anchor.anchorUUID}", it)
         }
-
-        parent.addChild(entity)
-        meshEntities[anchor.anchorUUID] = entity
     }
 
     private fun removeMeshEntity(anchorUUID: UUID) {
         meshEntities.remove(anchorUUID)?.destroy()
     }
 
-    private fun clear() {
+    private fun clearMeshEntities() {
         meshEntities.values.forEach { it.destroy() }
         meshEntities.clear()
+    }
+
+    private companion object {
+        private const val TAG = "SpatialMeshManager"
     }
 }
