@@ -1,7 +1,7 @@
 # MateFairy01 工作汇报总览
 
 > 本文档汇总了项目各阶段的工作汇报，用于快速了解项目开发进度与完成情况。
-> 最后更新：2026-06-05
+> 最后更新：2026-06-06
 
 ---
 
@@ -595,3 +595,797 @@ SDK 0.11.7 源码确认：
 - Android Studio 仍可能显示旧的 Kotlin 诊断缓存；建议重新 Sync Gradle 或执行 Invalidate Caches 后再看 IDE 红线。
 - 后续合并分支后优先运行 `./gradlew projects`，可最快发现 Gradle 脚本冲突标记。
 - `SpatialMeshManager` 当前保留了 `occlusionMaterial` 字段但未渲染 Mesh Debug/遮挡模型；后续如需真实遮挡可增加 `ModelComponent(mesh, material)` 的可选调试/遮挡路径。
+
+---
+
+## Phase 15 工作汇报：足球弹性参数小幅增强
+
+### 一、功能开发完成情况
+
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt` 中 `configureFootballPhysics()` 的足球物理材质配置。
+- 将足球 `CollisionComponent.physicsMaterial` 从默认 `PhysicsMaterialResource()` 改为显式参数配置。
+- 保持 `staticFriction = 0.8f`、`dynamicFriction = 0.8f` 不变，仅将 `restitution` 设置为 `0.85f`，在不明显改变滚动/摩擦手感的前提下稍微增强反弹效果。
+
+### 二、编译与测试情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin --no-daemon -Dkotlin.compiler.execution.strategy=in-process`。
+- 结果：编译通过。
+- IDE 诊断：当前 `GetDiagnostics` 存在大范围 import 未解析的缓存/索引类误报，但 Gradle 编译已验证本次修改有效。
+
+### 三、后续开发建议
+
+- 如果真机体验仍偏软，可优先小步调整 `restitution`，建议每次增加 `0.03f` 到 `0.05f`。
+- 不建议同时提高空间网格的 restitution，避免现实环境整体变得过于弹性化。
+
+---
+
+## Phase 16 工作汇报：篮球资源按足球链路接入
+
+### 一、功能开发完成情况
+
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt`，新增 `basketballEntity` 运行时引用。
+- 在加载 Editor 场景后查找 `Basketball` 实体，并为其挂载 `InteractionObjectComponent(objectId = "basketball", tags = setOf("sports", "physics"))`。
+- 将原足球物理配置函数泛化为 `configureSportsBallPhysics(ball, colliderRadius)`，足球和篮球共用同一套动态刚体、连续碰撞、球形碰撞体、摩擦/恢复系数配置。
+- 篮球同样挂载 `FootballPhysicsActivationComponent`，复用现有空间网格地面检测后再开启重力的激活系统，避免空间 mesh 尚未生成时直接掉落穿透。
+- 新增 `BASKETBALL_COLLIDER_RADIUS = 0.12f`，足球保持 `FOOTBALL_COLLIDER_RADIUS = 0.11f`。
+- 将测试点击弹飞逻辑抽为 `applyBallTapImpulse(ball)`，足球与篮球分别通过独立 `pointerInput` 命中，避免点击一个球时两个球同时被施加速度。
+
+### 二、编译与诊断情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：构建进入 Kotlin 编译阶段后失败在既有 `GameUIContainer` 解析问题：`Unresolved reference 'GameUIContainer'`。
+- 说明：`GameUIContainer.kt` 文件存在，且该引用在本次修改前已经位于 `HomeStage.kt` 中；本次任务未擅自改动 UI 模块。
+- 已执行：`GetDiagnostics`，IDE 当前返回大量索引/重复声明/未解析类诊断，其中多数与本次篮球接入无直接关系。
+
+### 三、后续开发建议
+
+- 建议优先排查 `GameUIContainer` 编译解析问题，确认 sourceSet、包名、重复类或 IDE/Gradle 缓存状态。
+- 后续如新增更多球类资源，可继续复用 `configureSportsBallPhysics()`，只需新增资源实体查找、`InteractionObjectComponent` objectId 与 collider radius。
+
+---
+
+## Phase 17 工作汇报：资源物理配置中心重构
+
+### 一、功能开发完成情况
+
+- 新增 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/ResourcePhysicsConfigurator.kt`，作为资源物理配置统一入口。
+- `ResourcePhysicsConfigurator` 内部保留资源独立配置函数：`configureFootball()` 与 `configureBasketball()`，分别维护足球和篮球的半径、摩擦、恢复系数、线性阻尼、角阻尼等参数。
+- `HomeStage.kt` 不再直接维护足球/篮球物理细节，只负责查找 Editor 场景实体并调用对应资源配置函数。
+- 将原先的 `configureSportsBallPhysics()` 从 `HomeStage.kt` 中移除，避免不同资源共享同一套配置导致后续调参耦合。
+- 将原 `FootballPhysicsActivationComponent/System` 泛化为 `ResourcePhysicsActivationComponent/System`，用于所有需要等待空间 mesh 地面就绪后再启用重力的资源。
+- `HomeStage.kt` 系统注册从 `FootballPhysicsActivationSystem` 更新为 `ResourcePhysicsActivationSystem`。
+
+### 二、架构收益
+
+- 统一入口：所有资源物理配置集中在 `ResourcePhysicsConfigurator`，便于查找和维护。
+- 独立配置：每个资源保留独立函数和独立参数，足球与篮球后续可分别调参，不互相影响。
+- 场景解耦：`HomeStage.kt` 只做资源装配，不承载资源物理细节。
+- 命名泛化：物理激活组件从足球专属语义改为资源通用语义，可复用到更多资源。
+
+### 三、编译与测试情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+- 已执行：`GetDiagnostics`。
+- 结果：IDE 仍返回大量索引/重复声明/未解析类误报，但 Gradle 编译通过，本次重构未引入编译错误。
+
+### 四、后续开发建议
+
+- 后续新增资源时，在 `ResourcePhysicsConfigurator` 中新增独立配置函数，例如 `configureTennisBall()`、`configureToyCube()`。
+- 如果资源类型越来越多，可进一步把配置参数外置为 data class registry，但当前阶段先保留显式函数以便调参和理解。
+
+---
+
+## Phase 18 工作汇报：修复篮球悬空与不可交互问题
+
+### 一、问题定位
+
+- 对比 `MyScene.usda` 后确认：`Football` 在 Editor 场景中自带 `CollisionComponent`、`BaseInteractableComponent`、`HoverEffectComponent`、`RigidBodyComponent`、`PhysicsForceComponent`。
+- `Basketball` 只包含资源引用和 Transform，没有 Editor 侧交互/碰撞/物理组件。
+- 代码虽然为篮球补了 `CollisionComponent` 和 `RigidBodyComponent`，但没有补 `InteractableComponent` 与 `HoverEffectComponent`，因此用户手势命中链路不完整。
+- `runtimeState.basketballEntity` 原本是普通 `var`，`SpatialView.initial` 中赋值不会触发 Compose 重新创建 `pointerInput`，导致手势监听可能始终拿到初始的 `null`。
+- `ResourcePhysicsActivationSystem` 若一直等不到空间 mesh raycast 命中，会让资源长期保持 `isAffectedByGravity = false`，表现为悬空。
+
+### 二、修复内容
+
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/ResourcePhysicsConfigurator.kt`：
+  - 在通用动态球配置中补齐 `PhysicsForceComponent`。
+  - 在通用动态球配置中补齐 `InteractableComponent`。
+  - 在通用动态球配置中补齐 `HoverEffectComponent`。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/FootballPhysicsActivationSystem.kt`：
+  - `ResourcePhysicsActivationComponent` 新增 `fallbackEnableGravitySeconds = 6f`。
+  - 当空间 mesh raycast 长时间没有命中时，兜底开启重力，避免资源永久悬空。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt`：
+  - `footballEntity` 与 `basketballEntity` 改为 `mutableStateOf`，让资源加载完成后触发 Compose 重组并重新安装 `pointerInput`。
+
+### 三、编译与测试情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+- 已执行：`GetDiagnostics`。
+- 结果：IDE 仍返回大量 Kotlin 索引/重复声明/未解析类误报；Gradle 编译通过，本次修复未引入编译错误。
+
+### 四、后续建议
+
+- 后续新增 Editor 资源时，不能假设资源自带 Editor 组件；需要在 `ResourcePhysicsConfigurator` 中显式补齐交互、碰撞、刚体、力组件。
+- 如果某个资源需要用户手势交互，必须同时具备 `InteractableComponent` 和 `CollisionComponent`。
+- 如果运行时引用会参与 Compose `pointerInput` key，必须使用可观察 state，否则 initial 中赋值不会触发手势监听更新。
+
+---
+
+## Phase 19 工作汇报：新增 GLB 静态资产启动展示
+
+### 一、功能开发完成情况
+
+- 新增资源已位于 `/Users/bytedance/MateFairy/app/src/main/assets/boombox.glb` 与 `/Users/bytedance/MateFairy/app/src/main/assets/rubber_duck_toy.glb`。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt`，在 `SpatialView.initial` 阶段并行加载两个 GLB。
+- 新增 `StartupStaticAssetSpec` 与 `STARTUP_STATIC_ASSETS`，集中记录启动展示资产的 URI、Stage 坐标和缩放。
+- 新增 `createStartupStaticAsset()`，将 GLB 根实体挂到 wrapper 实体下，统一设置位置与缩放，避免直接修改模型内部层级。
+- 两个模型被挂载到 `rootEntity`，启动进入游戏场景后会出现在用户前方左右两侧。
+
+### 二、关键设计决策
+
+- 参考 PICO Spatial SDK 模型加载文档，GLB 属于受支持的 glTF 二进制格式，直接通过 `Entity.loadSuspend("asset://...")` 从 APK assets 加载。
+- 资产加载放在 `SpatialView.initial` 中执行，保证只在场景初始化时加载一次，不放入 `update` 避免重复加载或帧循环阻塞。
+- 通过 wrapper 实体设置 Transform，保留 GLB 文件自身根层级和子节点结构，后续如需动画、材质或碰撞扩展不会被启动摆放逻辑污染。
+- 通过 GLB JSON 包围盒检查确认模型原始尺寸：`boombox` 约 0.72m × 0.47m × 0.19m，`rubber_duck_toy` 约 0.21m × 0.29m × 0.30m，因此分别设置 `0.45f` 与 `0.9f` 缩放。
+
+### 三、编译与测试情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+- 已确认：`/Users/bytedance/MateFairy/app/build.gradle.kts` 中 `androidResources.noCompress` 已包含 `glb`，两个新增模型会按资源文件形式打包进 APK。
+
+### 四、后续建议
+
+- 如果后续希望这两个静态展示物可点击、可拿取或参与物理碰撞，应为它们补充 `CollisionComponent` 与 `InteractableComponent`，并按资源类型选择合适碰撞形状。
+- 如果希望通过 PICO Spatial Editor 可视化摆放这两个资产，后续可把 GLB 转入 Editor 资产流程或替换为 USD/USDA 工作流。
+- 如果启动资产数量继续增加，建议把 `STARTUP_STATIC_ASSETS` 迁移到 JSON 配置，保持场景装配数据驱动。
+
+---
+
+## Phase 20 工作汇报：新增 GLB 资产物理化与空间网格交互
+
+### 一、功能开发完成情况
+
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/ResourcePhysicsConfigurator.kt`：
+  - 新增 `configureBoombox()` 和 `configureRubberDuck()`。
+  - 新增盒体动态物理配置 `BoxPhysicsConfig`，通过 `ShapeResource.createBox()` 为非球形 GLB 创建近似碰撞体。
+  - 抽出 `configureDynamicRigidBody()`，统一配置 `CollisionComponent`、`RigidBodyComponent`、`PhysicsForceComponent`、`InteractableComponent`、`HoverEffectComponent`。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/FootballPhysicsActivationSystem.kt`：
+  - `ResourcePhysicsActivationComponent` 新增 `floorOffset`，支持球体半径以外的盒体落地高度。
+  - 安全落地高度从 `radius` 改为 `floorOffset`，保证不同形状资源都能按自身碰撞体高度对齐现实环境网格。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt`：
+  - `StartupStaticAssetSpec` 扩展 `objectId`、`visualScale`、`floorOffset` 和 `configurePhysics`。
+  - `createStartupStaticAsset()` 改为创建“动态物理代理 + 子级视觉 GLB”结构。
+  - boombox 和 rubber duck 启动加载后会拥有动态刚体、完整碰撞体和物理材质，并等待空间 mesh 检测后开启重力。
+
+### 二、关键设计决策
+
+- 没有把 `RigidBodyComponent` 直接挂到 GLB 根节点上，而是创建 scale=1 的物理代理实体，再把缩放后的 GLB 作为子级视觉模型挂载，避免刚体系统与 GLB 内部缩放/层级产生耦合。
+- boombox 使用近似盒体碰撞尺寸 `0.33m × 0.22m × 0.10m`，rubber duck 使用 `0.20m × 0.26m × 0.28m`，尺寸来自上一阶段对 GLB 包围盒和运行时缩放的估算。
+- 两个资源均使用 `CollisionResponseMode.COLLIDER_FULL`，可与 `SpatialMeshManager` 创建的现实环境 mesh 静态碰撞体产生物理阻挡与落地交互。
+- 初始 `RigidBodyComponent.isAffectedByGravity = false`，继续复用 `ResourcePhysicsActivationSystem` 等待空间网格 raycast 命中后再开启重力，避免启动时 mesh 尚未生成导致资源穿透现实地面。
+
+### 三、编译与测试情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+- 已执行：`GetDiagnostics`。
+- 结果：`ResourcePhysicsConfigurator.kt` 与 `FootballPhysicsActivationSystem.kt` 无诊断错误；`HomeStage.kt` 仍存在 IDE Kotlin 索引误报，但 Gradle 编译通过。
+
+### 四、后续建议
+
+- 如果运行设备上发现 boombox 或 duck 的碰撞体过大/过小，可优先微调 `BoxPhysicsConfig.colliderSize` 与 `StartupStaticAssetSpec.floorOffset`。
+- 如果要追求更贴合模型外形的碰撞，可改用多个 primitive shape 组合；不建议对动态资源直接使用复杂 static mesh。
+- 如果后续要让用户点击/推动这两个资产，可为它们增加类似足球/篮球的 `pointerInput` 状态引用和测试 impulse。
+
+---
+
+## Phase 21 工作汇报：boombox_new 资源替换
+
+### 一、功能开发完成情况
+
+- 新增资源 `/Users/bytedance/MateFairy/app/src/main/assets/boombox_new.glb` 已接入启动场景。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt`，将 boombox 启动资产路径从 `asset://boombox.glb` 替换为 `asset://boombox_new.glb`。
+- 保留 `objectId = "boombox"`、位置、缩放、物理配置和交互标签不变，使新资源完全继承原 boombox 的运行时语义与物理行为。
+- 已确认 Kotlin 源码中不再存在 `asset://boombox.glb` 引用。
+
+### 二、关键设计决策
+
+- 通过 GLB JSON chunk 检查确认 `boombox_new.glb` 与旧 `boombox.glb` 的包围盒一致，尺寸仍约为 `0.72m × 0.47m × 0.19m`，且同样包含 1 个动画。
+- 因尺寸一致，本次不调整 `visualScale = 0.45f`、`floorOffset = 0.11f` 和 `ResourcePhysicsConfigurator.configureBoombox()` 中的盒体碰撞参数。
+- 替换仅发生在运行时加载 URI 层，避免改变已有 AI/交互系统依赖的对象 ID。
+
+### 三、编译与测试情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+- 已执行源码检索：`asset://boombox.glb` 在 Kotlin 源码中无匹配，`asset://boombox_new.glb` 仅在 `HomeStage.kt` 启动资产配置中出现。
+
+### 四、后续建议
+
+- 旧文件 `/Users/bytedance/MateFairy/app/src/main/assets/boombox.glb` 当前不再被代码加载；如果确认不再需要兼容回退，可在后续清理资源文件以减少 APK 体积。
+- 如果 `boombox_new.glb` 后续改动了尺寸或原点，应同步复查 `visualScale`、`floorOffset` 和盒体碰撞尺寸。
+
+---
+
+## Phase 23 工作汇报：boombox 双曲目音乐调度
+
+### 一、功能开发完成情况
+
+- 新增音乐资源已位于：
+  - `/Users/bytedance/MateFairy/app/src/main/assets/Dying_Me_instrumental.wav`
+  - `/Users/bytedance/MateFairy/app/src/main/assets/火星时代教育.wav`
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/audio/MusicModule.kt`：
+  - 将 boombox 空播放列表调度升级为顺序播放列表调度。
+  - 新增 `playNextSpatialMusicAt()`，每次启动 boombox 会从播放列表中选择下一首。
+  - 使用 `MediaMetadataRetriever` 读取 assets 中 `.wav` 时长，并通过主线程 `Handler` 安排曲目结束后的自动切歌。
+  - `stopSpatialMusic()` 会取消后续自动切歌并释放当前 `AudioPlayerController`。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/ObjectInteractionActionControllers.kt`：
+  - `StartBoomboxActionController` 从随机播放改为调用 `playNextSpatialMusicAt()`。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/runtime/MateFairyRuntimeFactory.kt`：
+  - 初始化 `BOOMBOX_SPATIAL_MUSIC_PLAYLIST`，注册两首新增 `.wav`。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt`：
+  - 场景销毁时调用 `runtime.musicModule.destroy()`，确保音频控制器和缓存资源释放。
+
+### 二、关键设计决策
+
+- 继续使用 PICO Spatial SDK `ObjectAudioComponent + AudioResource + Entity.playAudio()`，让音乐从 boombox 实体所在位置发声。
+- 不使用全局 `MediaPlayer` 播放 boombox 音乐，避免失去空间音频定位。
+- 当前策略为顺序轮播：启动 boombox 播放下一首，曲目结束后自动播放下一首；停止 boombox 会取消调度。
+- `AudioPlayerController.setLoop(false)`，由调度器控制跨曲目循环，而不是单曲无限循环。
+
+### 三、编译与测试情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+- 已用 Python `wave` 检查两首 `.wav`：
+  - `Dying_Me_instrumental.wav`：双声道，44100Hz，16bit，约 233.91 秒。
+  - `火星时代教育.wav`：双声道，44100Hz，16bit，约 196.26 秒。
+- `MusicModule.kt` 与 `ObjectInteractionActionControllers.kt` 无诊断错误；`HomeStage.kt` 和 `MateFairyRuntimeFactory.kt` 仍存在 IDE Kotlin 索引误报，但 Gradle 编译通过。
+
+### 四、后续建议
+
+- 如果后续希望支持“下一首/上一首/暂停/继续”等语音指令，可在 `MusicModule` 暴露对应控制方法，并新增 action intent。
+- 如果歌曲数量继续增加，建议把播放列表迁移到配置文件，避免硬编码在 `MateFairyRuntimeFactory`。
+- 如果需要更丝滑的切歌体验，可后续增加淡入淡出或 AudioMixerGroup 统一音量控制。
+
+---
+
+## Phase 24 工作汇报：boombox action 调试开关
+
+### 一、功能开发完成情况
+
+- 新增 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/ui/DebugActionPanel.kt`。
+- 在调试面板中提供一个“打开音响/关闭音响”切换按钮，用于直接触发精灵执行 boombox action。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt`：
+  - 新增 `debugActionAttachmentEntity` 运行时引用。
+  - 新增 `debug_action_panel` AttachmentPanel。
+  - 将调试面板挂到 `hmdEntity` 下，位置为 `Vector3(0.44f, -0.32f, -0.85f)`，方便启动后直接看到并点击。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/InteractionActionCore.kt`：
+  - `InteractionActionSource` 新增 `DEBUG`，用于区分调试入口触发的 action。
+
+### 二、调试行为
+
+- 点击“打开音响”：
+  - 向 `InteractionActionRuntimeDependencies.requestBus` 写入 `start-boombox` 请求。
+  - `objectIds = listOf("boombox")`。
+  - `source = InteractionActionSource.DEBUG`。
+  - 后续仍由 `InteractionActionSystem` 调度精灵走向音响、拿起并播放音乐。
+- 点击“关闭音响”：
+  - 写入 `stop-boombox` 请求。
+  - 触发精灵放下音响，并调用已有音乐停止逻辑。
+- 如果当前已有 action lock，面板会提示“当前有 action 正在执行，请稍后再试”，不会强行插队。
+
+### 三、编译与测试情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+- `DebugActionPanel.kt` 无 IDE 诊断错误。
+- `HomeStage.kt` 和 `InteractionActionCore.kt` 仍存在 IDE Kotlin 索引误报，但 Gradle 编译通过，符合近期工程现象。
+
+### 四、后续建议
+
+- 当前调试面板为常驻 HMD 附件，适合开发调试；如需发布版本，可通过 build flag 或配置项控制是否显示。
+- 后续可以扩展为通用 Debug Action Panel，加入“挤鸭子”“踢足球”“下一首”等 action 快捷触发项。
+
+---
+
+## Phase 22 工作汇报：boombox 与 rubber duck 交互 action 基建
+
+### 一、功能开发完成情况
+
+- 新增 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/PickedObjectFollowSystem.kt`。
+  - 新增 `PickedObjectFollowComponent`，用于标记被精灵抓起并跟随精灵的虚拟物体。
+  - 新增 `PickedObjectFollowSystem`，每帧根据精灵 Transform 和本地 offset 更新被拾取物体位置，并暂停重力/力/速度。
+- 新增 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/ObjectInteractionActionControllers.kt`。
+  - `StartBoomboxActionController`：精灵寻路到 boombox，抓起音响，让音响跟随精灵，触发音响动画，并调用音乐模块随机播放空间音乐。
+  - `StopBoomboxActionController`：触发关闭动作，停止空间音乐，将音响放到精灵前方，解除跟随并恢复重力。
+  - `SqueezeRubberDuckActionController`：精灵寻路到 `rubber_duck_toy`，抓起小黄鸭，每 2 秒触发一次对象动画，并调用音乐模块播放小黄鸭音效。
+  - `PutDownRubberDuckActionController`：将小黄鸭放到精灵前方，解除跟随并恢复重力。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/audio/MusicModule.kt`。
+  - 新增空间音乐播放：`playRandomSpatialMusicAt(entity)`，通过 `ObjectAudioComponent + entity.playAudio()` 实现声源跟随实体。
+  - 新增空间音乐停止：`stopSpatialMusic()`。
+  - 新增小黄鸭音效预留：`setRubberDuckSfxList()` 与 `playRandomRubberDuckSfxAt(entity)`。
+  - 当前音乐和音效资源列表默认为空，资源未配置时安全跳过并写日志。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/runtime/MateFairyRuntimeFactory.kt`。
+  - 注册 4 个新 ECS interaction action controller。
+  - 注册 4 个 SceneInteractionActionHandler，使 LLM action intent 能桥接到 ECS action。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt`。
+  - 注册/卸载 `PickedObjectFollowSystem`。
+  - 将 `rubber_duck_toy.glb` 的运行时 objectId 从旧 `rubber_duck` 统一改为 `rubber_duck_toy`。
+- 修改 LLM 语义入口：
+  - `DeepSeekLLMProvider.kt` prompt 支持 `start-boombox`、`stop-boombox`、`squeeze-rubber-duck`、`put-down-rubber-duck`。
+  - `MockLLMProvider.kt` 支持本地 mock 识别音响和小黄鸭指令。
+- 修改 `AnimationConfig.kt` 与 `DefaultBehaviorDecisionMaker.kt`。
+  - 新增 action intent 支持列表。
+  - 新 action 均归入 action 类任务，优先级高于普通动画，但仍低于负面情绪动画。
+
+### 二、当前 action id 与客体
+
+- `start-boombox`：主体 `fairy`，客体 `boombox`。
+- `stop-boombox`：主体 `fairy`，客体 `boombox`。
+- `squeeze-rubber-duck`：主体 `fairy`，客体 `rubber_duck_toy`。
+- `put-down-rubber-duck`：主体 `fairy`，客体 `rubber_duck_toy`。
+
+### 三、编译与诊断情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+- 已执行：`GetDiagnostics`。
+- 结果：仍存在 IDE/Kotlin 索引层面的历史误报，如重复声明、Android/Compose/PICO 类未解析；Gradle 编译通过，当前改动未引入编译错误。
+
+### 四、后续开发建议
+
+- 配置音乐资源后，调用 `MusicModule.setSpatialMusicPlaylist(listOf(...))` 注入 boombox 曲库。
+- 配置小黄鸭音效后，调用 `MusicModule.setRubberDuckSfxList(listOf(...))` 注入音效库。
+- 如果 boombox/duck 的 GLB 动画轨道不在根实体上，后续需要扩展对象动画 helper，从模型层级中递归查找真正带 animation resources 的子实体。
+- 当前 `squeeze-rubber-duck` 默认触发 3 次，每 2 秒一次，然后 action 完成但小黄鸭保持被拾取状态；需要通过 `put-down-rubber-duck` 放下。
+
+---
+
+## Phase 23 工作汇报：资源消失与 boombox action 稳定性修复
+
+### 一、问题现象
+
+- 启动后足球、篮球、鸭子、音响短暂出现后消失。
+- 点击调试面板“打开音响”后，精灵曾出现静止、下坠、无反应、拿起音响后抖动或高速飞出房间等多轮现象。
+
+### 二、修复完成情况
+
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/FootballPhysicsActivationSystem.kt`：
+  - 移除无地面射线命中时的兜底重力激活。
+  - 动态资源在没有真实 spatial mesh floor hit 前保持 `isAffectedByGravity = false`，避免掉入虚空。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/ResourcePhysicsConfigurator.kt`：
+  - 足球和篮球统一使用运行时 primitive sphere collider，避免复用 Editor 碰撞体导致篮球穿地。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/behavior/FairyBehaviorSystem.kt` 与 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/PlayFootballActionController.kt`：
+  - 随机踢球和主动踢球都要求足球已完成地面激活且 `y >= -0.5`。
+  - 避免 startup 阶段 mesh 尚未就绪时 action 拉动足球/精灵状态。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/ObjectInteractionActionControllers.kt`：
+  - `CarryAndUseObjectActionInstance` 在脚本直接移动精灵期间将精灵刚体切为 `RigidBodyMode.KINEMATIC`，清空力和速度，完成或取消时恢复原刚体模式。
+  - 被拿起的 boombox/duck 在持有期间切为 `RigidBodyMode.KINEMATIC`，放下时恢复 `RigidBodyMode.DYNAMIC` 并重新开启重力。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/PickedObjectFollowSystem.kt`：
+  - 跟随系统每帧保证被持有物体处于 `KINEMATIC`，避免“直接写 Transform + 动态刚体求解”产生抖动和异常冲量。
+- 更新 `/Users/bytedance/MateFairy/debug-scene-assets-boombox.md`：
+  - 记录本轮 debug 假设、证据、修复和待复测状态。
+
+### 三、编译与测试情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+- 已执行：`GetDiagnostics` 检查 `ObjectInteractionActionControllers.kt` 与 `PickedObjectFollowSystem.kt`。
+- 结果：两个文件均无诊断错误。
+
+### 四、后续建议
+
+- 需要真机复测：等待资源稳定落地后点击“打开音响”，观察精灵是否还会在持有音响后抖动或飞出房间。
+- 如果仍在墙边卡住，应进一步考虑脚本 action 期间临时关闭精灵/持有物与 spatial mesh 的碰撞，或加入避障/路径规划，而不是直线飞向目标。
+- 复测确认后再清理临时 debug reporter、HTTP cleartext 配置、`.dbg` 日志和调试面板常驻入口。
+
+---
+
+## Phase 24 工作汇报：持有物碰撞推挤修复
+
+### 一、问题定位
+
+- 用户复测发现：精灵可以拿起音响，但拿起后仍会带着音响高速飞出房间。
+- 运行日志显示 `start-boombox` 在 `PICKING_UP`、`USING`、`FINISHING` 和 `action completed` 阶段坐标仍正常，说明飞出发生在 action 完成并释放行为锁之后。
+- 结合 PICO Spatial SDK 文档，`CollisionResponseMode.COLLIDER_FULL` 会产生真实物理阻挡和推挤；被持有的 boombox 虽然已经是 `KINEMATIC`，但仍保留 `COLLIDER_FULL`，可能持续顶推恢复为动态行为的精灵。
+
+### 二、修复完成情况
+
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/PickedObjectFollowSystem.kt`：
+  - `PickedObjectFollowComponent` 新增 `previousCollisionResponseMode` 字段，用于记录持有前的碰撞响应模式。
+  - 被持有物每帧跟随时强制使用 `CollisionResponseMode.TRIGGER_LITE`，保留触发检测能力但不产生物理推挤。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/ObjectInteractionActionControllers.kt`：
+  - `PICKING_UP` 时立即把目标物体碰撞响应切为 `TRIGGER_LITE`。
+  - `PutDownObjectActionInstance` 放下物体时恢复原碰撞响应模式，默认回退为 `COLLIDER_FULL`。
+
+### 三、编译与测试情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+- 已执行：`GetDiagnostics` 检查 `ObjectInteractionActionControllers.kt` 与 `PickedObjectFollowSystem.kt`。
+- 结果：两个文件均无诊断错误。
+
+### 四、后续建议
+
+- 需要继续真机复测：点击“打开音响”后观察精灵持有音响时是否还会被音响顶飞。
+- 如果仍飞出，下一轮重点应检查 `FairyBehaviorSystem` 在 action lock 释放后的恢复逻辑，以及是否有旧速度/随机踢球 action 继续影响精灵。
+
+---
+
+## Phase 25 工作汇报：随机踢球 action 卡死与优先级抢占修复
+
+### 一、问题定位
+
+- 用户复测发现现象变化：精灵可能执行随机踢球 action，飞到一半静止，之后点击“打开音响”一直提示已有其他 action 执行中。
+- 根因方向：
+  - `PlayFootballActionController` 仍使用 `PhysicsForceComponent` 推动态精灵，容易被 mesh/墙面/物理状态卡住。
+  - `play-football` 没有硬超时，卡在 `APPROACHING` 时会一直返回 `RUNNING`。
+  - `InteractionActionRequestBus` 对所有锁一视同仁，导致 `DEBUG` 请求不能抢占 `RANDOM` action。
+
+### 二、修复完成情况
+
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/PlayFootballActionController.kt`：
+  - 踢球 action 改为直接 Transform 步进，不再依赖物理力推进精灵。
+  - action 期间把精灵刚体临时切为 `RigidBodyMode.KINEMATIC`，并清空力和速度。
+  - 新增 `maxActionSeconds = 4.5f`，超时后返回 `FAILED` 并释放状态。
+  - 完成、失败、取消均清理 `FairyActionLockComponent`、力、速度，并恢复原刚体模式。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/InteractionActionCore.kt`：
+  - 为 `InteractionActionSource` 定义优先级：`RANDOM < DIALOGUE < DEBUG`。
+  - `RequestBus` 在高优先级请求可抢占时允许入队，而不是直接拒绝。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/InteractionActionSystem.kt`：
+  - 当高优先级请求到来时，取消当前低优先级 action，释放旧 lock，再创建新 action。
+
+### 三、编译与测试情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+- `InteractionActionSystem.kt` 无诊断错误。
+- `InteractionActionCore.kt` 和 `PlayFootballActionController.kt` 仍有 IDE Kotlin 索引误报，但 Gradle 编译通过，符合当前工程已知现象。
+
+### 四、后续建议
+
+- 真机复测时先观察随机踢球：如果精灵卡住，应在 4.5 秒左右自动释放 action lock。
+- 随机踢球卡住期间点击“打开音响”，应能抢占随机 action 并执行 boombox action。
+
+---
+
+## Phase 26 工作汇报：足球/篮球安全回收与 boombox 播放兜底
+
+### 一、问题定位
+
+- 用户反馈足球/篮球存在两种情况：启动后过一段时间突然掉出房间，或启动后直接看不到。
+- 既有日志显示足球曾在 `ResourcePhysicsActivationComponent.activated == false` 且持续 `no floor hit` 的状态下，从 `y=-10` 继续掉到 `y=-1600` 以下。
+- 这说明资源可能在 floor activation 前被 action/物理状态移动到 raycast 范围之外，随后激活系统只能持续报 no-floor，无法自行恢复。
+- 用户还反馈 boombox 被拿起后无音乐，且精灵带着 boombox 再次飞出房间。
+
+### 二、修复完成情况
+
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/FootballPhysicsActivationSystem.kt`：
+  - 足球/篮球在真实 floor 未就绪时强制悬停到 `PRE_ACTIVATION_VISIBLE_Y = 0.65f`，避免启动时埋在现实 floor/occlusion 后不可见。
+  - 新增 `lastSafePosition`，在 floor hit 激活时记录安全位置。
+  - 激活后如果足球/篮球低于 `FALL_RESET_Y = -0.5f`，自动回收到最近安全点，关闭重力，清空 force/velocity，并重新等待 floor hit。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/behavior/FairyBehaviorSystem.kt`：
+  - 保留“精灵拿着 boombox 到处跑”的功能设计。
+  - 当精灵携带 `PickedObjectFollowComponent` 物体时，日常移动从动态刚体力控切换为 `RigidBodyMode.KINEMATIC` 直移。
+  - 携带期间清空速度和力，并限制最大移动速度，避免物理反馈把精灵和音响一起放大推飞。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/audio/MusicModule.kt`：
+  - 如果 spatial `entity.playAudio(resource)` 返回 null，则使用 `MediaPlayer` 播放同一个 assets wav，保证至少可听见音乐。
+  - `stopSpatialMusic()` 同时停止 fallback BGM。
+
+### 三、编译与验证
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+- `ObjectInteractionActionControllers.kt` 与 `MusicModule.kt` 无诊断错误。
+- `FootballPhysicsActivationSystem.kt` 仍存在 IDE Kotlin 索引误报，但 Gradle 编译通过。
+- 已清空 debug server 日志，便于下一轮 post-fix 复测只看新日志。
+
+### 四、后续建议
+
+- 真机复测重点：
+  - 足球/篮球启动后是否立刻可见。
+  - 足球/篮球是否仍会掉出房间；如果掉落，是否会自动回收到安全位置。
+  - 点击“打开音响”后，音响是否播放音乐。
+  - 精灵是否能持续拿着音响移动，且不再带着音响飞出房间。
+
+---
+
+## Phase 27 工作汇报：boombox 拾取距离、音乐 fallback 与 debug 抢占修复
+
+### 一、问题定位
+
+- 用户反馈 boombox 与精灵距离偏远，拾取效果不明显。
+- `start-boombox` 后仍无音乐，说明仅在 `playAudio()` 返回 null 时 fallback 不够；播放器对象可能存在但未实际进入 playing。
+- `stop-boombox` 与 `start-boombox` 同为 `DEBUG` 来源，旧抢占逻辑只允许更高优先级抢占，导致同优先级 debug stop 被 lock 拒绝。
+
+### 二、修复完成情况
+
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/ObjectInteractionActionControllers.kt`：
+  - `StartBoomboxActionController` 的 `holdOffset` 从 `Vector3(0f, -0.04f, 0.32f)` 调整为 `Vector3(0f, -0.03f, 0.16f)`。
+  - boombox 更贴近精灵，保留“持续拿着音响移动”的功能设计。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/audio/MusicModule.kt`：
+  - fallback 条件从 `spatialMusicPlayer == null` 扩展为 `spatialMusicPlayer?.isPlaying() != true`。
+  - 当 spatial audio 未实际播放时，立即使用 `MediaPlayer` 播放 assets 中同一首 wav。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/InteractionActionCore.kt`：
+  - `DEBUG` 来源的 action 可以抢占另一个不同 controllerId 的 `DEBUG` action。
+  - `stop-boombox` 可在 `start-boombox` 执行中入队并触发抢占。
+
+### 三、编译与测试情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+- `ObjectInteractionActionControllers.kt` 与 `MusicModule.kt` 无诊断错误。
+- `InteractionActionCore.kt` 仍存在 IDE Kotlin 索引误报，但 Gradle 编译通过，符合本项目已知现象。
+
+### 四、后续建议
+
+- 真机复测：
+  - boombox 是否贴近精灵，能体现拾取效果。
+  - 点击“打开音响”后是否能听到音乐。
+  - `start-boombox` 执行中点击“关闭音响”是否能抢占并停止音乐。
+
+---
+
+## Phase 28 工作汇报：普通 MediaPlayer 音频最小验证入口
+
+### 一、开发目的
+
+- 为排查 boombox 音乐无声问题，新增一个不经过 spatial audio、不经过 boombox action、不依赖 3D 实体的最小验证入口。
+- 目标是区分问题来源：
+  - 如果普通 BGM 能出声，说明设备/模拟器音频输出与 assets wav 读取正常，后续应集中排查 PICO spatial audio 链路。
+  - 如果普通 BGM 也无声，说明优先排查模拟器/真机音量、系统音频路由、assets 读取或 Android `MediaPlayer`。
+
+### 二、实现内容
+
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/ui/DebugActionPanel.kt`：
+  - `DebugActionPanel` 新增 `musicModule: MusicModule` 参数。
+  - 新增按钮 `测试普通音乐`，直接调用：
+    `musicModule.playBgmFromAsset("Dying_Me_instrumental.wav", loop = false, volume = 1.0f)`。
+  - 新增按钮 `停止普通音乐`，直接调用 `musicModule.stopBgm()`。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt`：
+  - 将 `runtime.musicModule` 传入 `DebugActionPanel(runtime.musicModule)`。
+
+### 三、编译情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+- `DebugActionPanel.kt` 无诊断错误。
+- `HomeStage.kt` 仍有 IDE Kotlin 索引误报，但 Gradle 编译通过。
+
+### 四、复测方法
+
+- 安装运行最新 debug build。
+- 打开 debug 面板，点击 `测试普通音乐`。
+- 如果有声：下一步排查 `AudioResource` / `AudioPlayerController` / `ObjectAudioComponent`。
+- 如果无声：下一步排查模拟器或设备音频输出、系统音量、`MediaPlayer` 异常日志。
+
+---
+
+## Phase 29 工作汇报：boombox 空间音频可听性 A/B 配置
+
+### 一、开发目的
+
+- 用户确认普通 `MediaPlayer` 音乐可播放，但仍要求 boombox 音乐必须使用空间声效，且声源始终跟随音响。
+- 本阶段执行空间音频排查第一步：保留 `ObjectAudioComponent`，但将配置调整为最容易听见的测试状态。
+
+### 二、实现内容
+
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/audio/MusicModule.kt`：
+  - `ensureObjectAudio(entity)` 不再只在缺失组件时设置，而是每次播放前强制覆盖 boombox 的 `ObjectAudioComponent`。
+  - 距离衰减从 `DistanceAttenuationMode.INVERSE_SQUARED` 改为 `DistanceAttenuationMode.FIXED`。
+  - directivity 改为 `Directivity(pattern = 0f, sharpness = 0f)`，用于测试尽量全向、不受朝向影响。
+  - `reverbVolume` 改为 `0f`，避免混响干扰听感判断。
+
+### 三、编译情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+- `MusicModule.kt` 无诊断错误。
+
+### 四、复测判断
+
+- 如果本轮能听到 boombox 空间音乐：
+  - 说明此前主要问题是 `INVERSE_SQUARED` 衰减或 directivity 导致声源实际不可听。
+  - 后续可逐步恢复更真实的方向性或距离衰减。
+- 如果仍然无声：
+  - 继续第二步验证：在 `entity.playAudio(resource)` 返回 controller 后显式调用 `play()`，或改成 `prepareAudio(resource) -> play()`。
+
+---
+
+## Phase 30 工作汇报：boombox 空间音频显式播放验证
+
+### 一、开发目的
+
+- 用户复测 Phase 29 后确认：`FIXED` 衰减和全向 `ObjectAudioComponent` 仍然无声。
+- 本阶段执行第二步验证：排查 PICO spatial audio 是否需要显式 `AudioPlayerController.play()`，不再依赖 `entity.playAudio()` 自动启动。
+
+### 二、实现内容
+
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/audio/MusicModule.kt`：
+  - boombox 空间播放从 `entity.playAudio(resource)` 改为 `entity.prepareAudio(resource)`。
+  - 拿到 `AudioPlayerController` 后显式调用：
+    - `setVolume(...)`
+    - `setLoop(false)`
+    - `play()`
+  - 为避免混淆本轮空间音频判断，boombox 空间播放路径不再触发普通 `MediaPlayer` fallback。
+  - debug payload 增加 `startupMode = "prepareAudio-play"`。
+
+### 三、编译情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+- `MusicModule.kt` 无诊断错误。
+
+### 四、复测判断
+
+- 如果本轮能听到 boombox 空间音乐：
+  - 说明问题是 `playAudio()` 启动语义或 controller 未显式 `play()`。
+  - 后续保持 `prepareAudio -> play` 作为稳定实现。
+- 如果仍然无声：
+  - 下一步应创建独立空间音频测试实体，放在 HMD 前方固定位置播放 wav，绕过 boombox action、实体跟随和物理层级，判断是否是 spatial audio 后端或 `AudioResource` 加载方式问题。
+
+---
+
+## Phase 31 工作汇报：独立 HMD 空间音频测试入口
+
+### 一、开发目的
+
+- 用户复测 Phase 30 后确认：`prepareAudio -> play` 后 boombox 空间音频仍然无声。
+- 本阶段进入第三步验证：创建一个独立于 boombox/action/follow/physics 的空间音频测试声源，固定在 HMD 前方播放同一 wav。
+
+### 二、实现内容
+
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/audio/MusicModule.kt`：
+  - 新增 `playSpatialAudioDebugAt(entity, fileName, volume)`，用于对任意实体触发空间音频播放。
+  - 将 `AudioResource.load` 的路径从裸文件名改为 PICO 官方文档推荐的 `asset://$fileName`。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt`：
+  - 新增 `spatialAudioTestEntity`，作为 `hmdEntity` 的子实体。
+  - 位置固定为 HMD 前方约 0.5m：`Vector3(0f, -0.05f, -0.5f)`。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/ui/DebugActionPanel.kt`：
+  - 新增 `测试空间音乐` 按钮。
+  - 点击后调用 `musicModule.playSpatialAudioDebugAt(spatialAudioTestEntity, "Dying_Me_instrumental.wav")`。
+  - `停止音乐测试` 同时停止普通 BGM 与 spatial music。
+
+### 三、编译情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+- `MusicModule.kt` 与 `DebugActionPanel.kt` 无诊断错误。
+- `HomeStage.kt` 仍有 IDE Kotlin 索引误报，但 Gradle 编译通过。
+
+### 四、复测判断
+
+- 如果点击 `测试空间音乐` 有声：
+  - PICO spatial audio 后端可用。
+  - 问题集中在 boombox 实体层级、位置跟随、action 触发时机或物理代理实体。
+- 如果点击 `测试空间音乐` 仍无声：
+  - 问题更可能在 PICO spatial audio 后端、模拟器 spatial audio 支持、`ObjectAudioComponent` 类型或 `AudioResource` 加载兼容性。
+  - 下一步建议 A/B 测试 `ChannelAudioComponent` 或 `AmbientAudioComponent`，判断是否只有 Object Audio 无声。
+
+---
+
+## Phase 32 工作汇报：空间音频链路确认与音量调参
+
+### 一、验证结论
+
+- 用户复测确认：
+  - 点击 `测试空间音乐` 后，音乐成功播放。
+  - 点击 `打开音响` 后，boombox 音乐也成功播放。
+- 结论：PICO spatial audio 后端、`ObjectAudioComponent`、`prepareAudio -> play`、boombox action 播放链路均已可用。
+- 此前无声的关键根因高度确定为：`AudioResource.load` 使用了裸文件名路径，应改为 PICO 官方文档推荐的 `asset://xxx.wav`。
+
+### 二、本次调参
+
+- 用户反馈音乐过大，难以分辨空间感和音响跟踪效果。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/audio/MusicModule.kt`：
+  - 新增默认空间音乐音量 `DEFAULT_SPATIAL_MUSIC_VOLUME = 0.35f`。
+  - boombox 空间音乐默认音量从 `1.0f` 降至 `0.35f`。
+  - HMD 前方空间测试音乐默认音量从 `1.0f` 降至 `0.35f`。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/ui/DebugActionPanel.kt`：
+  - 普通音乐测试与空间音乐测试按钮统一使用 `DEBUG_MUSIC_TEST_VOLUME = 0.35f`。
+
+### 三、编译情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+- IDE 对 `MusicModule.kt` 和 `DebugActionPanel.kt` 仍存在 Kotlin 索引误报，但 Gradle 编译为准。
+
+### 四、后续建议
+
+- 先以低音量验证空间方向感和 boombox 跟踪效果。
+- 若确认有空间感，可逐步从 `FIXED` 衰减恢复到更真实的距离衰减或更自然的 directivity。
+
+---
+
+## Phase 33 工作汇报：空间音频正式化与调试逻辑清理
+
+### 一、开发目的
+
+- 用户确认空间音频和 boombox action 均已正常播放后，要求进入正式实现收敛。
+- 本阶段目标：
+  - 将 boombox 空间音乐从验证配置切换为更真实的 `INVERSE_SQUARED` 距离衰减。
+  - 删除前期排查音频、物理和 action 问题时加入的临时 debug 逻辑。
+  - 保留用户仍需要的 debug 面板“打开音响 / 关闭音响”直接触发入口。
+
+### 二、完成内容
+
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/audio/MusicModule.kt`：
+  - `ObjectAudioComponent.distanceAttenuationMode` 从 `DistanceAttenuationMode.FIXED` 改为 `DistanceAttenuationMode.INVERSE_SQUARED`。
+  - 保留已验证成功的 spatial audio 关键路径：`AudioResource.load(fileName, "asset://$fileName", LoadType.FROM_ASSETS)`。
+  - 保留 `prepareAudio(resource) -> setVolume -> setLoop(false) -> play()` 播放流程。
+  - 删除 `playSpatialAudioDebugAt(...)` 和 HMD 前方独立空间音频测试入口相关方法。
+  - 删除 `SceneAssetsBoomboxDebugReporter` 相关临时远端上报调用。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/ui/DebugActionPanel.kt`：
+  - 删除 `测试普通音乐`、`测试空间音乐`、`停止音乐测试` 按钮。
+  - 删除普通 BGM / HMD 空间测试所需的参数和常量。
+  - 保留“打开音响 / 关闭音响”按钮，用于直接触发 boombox action。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt`：
+  - 删除 `spatialAudioTestEntity` HMD 子实体。
+  - `DebugActionPanel()` 恢复为无参调用。
+  - 删除 HomeStage 中临时远端埋点调用。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/interaction/InteractionActionCore.kt`：
+  - 删除 `SceneAssetsBoomboxDebugReporter` 对象及其 `JSONObject` / `HttpURLConnection` / `URL` 依赖。
+  - 保留 action 优先级和 `DEBUG` 抢占机制。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/FootballPhysicsActivationSystem.kt`、`ObjectInteractionActionControllers.kt`、`InteractionActionSystem.kt`：
+  - 删除前期 `debug-point` 远端上报块及无用 import。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/AndroidManifest.xml`：
+  - 删除仅用于本地 HTTP debug server 的 `android:usesCleartextTraffic="true"`。
+
+### 三、验证情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：`BUILD SUCCESSFUL`。
+- 已全局确认 `app/src/main` 下不再存在：
+  - `SceneAssetsBoomboxDebugReporter`
+  - `debug-point`
+  - `playSpatialAudioDebugAt`
+  - `spatialAudioTestEntity`
+  - `测试普通音乐` / `测试空间音乐` / `停止音乐测试`
+  - `usesCleartextTraffic`
+  - `DistanceAttenuationMode.FIXED`
+
+### 四、后续建议
+
+- 真机复测 `INVERSE_SQUARED` 后，如果音量衰减过快，可优先调节 `DEFAULT_SPATIAL_MUSIC_VOLUME` 或改用更温和的距离衰减参数。
+- 若需要更像实体音响，可在确认距离衰减合理后再逐步引入非全向 directivity。
+
+---
+
+## Phase 34 工作汇报：boombox 音量二次调低与收音机失真效果调研
+
+### 一、开发目的
+
+- 用户反馈当前 boombox 空间音乐仍然偏大，希望进一步降低音量并增强距离衰减感。
+- 用户同时提出希望模拟“收音机失真感”，但要求先调查可行性，不要贸然改代码。
+
+### 二、实现内容
+
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/audio/MusicModule.kt`：
+  - `DEFAULT_SPATIAL_MUSIC_VOLUME` 从 `0.35f` 降至 `0.18f`。
+  - 新增 `OBJECT_AUDIO_SOURCE_VOLUME = 0.85f`，并用于 `ObjectAudioComponent.volume`。
+  - 保持 `DistanceAttenuationMode.INVERSE_SQUARED` 不变。
+- 说明：PICO Spatial SDK 当前文档中 `DistanceAttenuationMode` 只提供 `FIXED` 与 `INVERSE_SQUARED` 两种模式，没有暴露自定义 rolloff 曲线、最大距离、参考距离等参数。因此“增强衰减感”的安全方式是降低源音量和播放控制器音量，让 `INVERSE_SQUARED` 下的距离变化更容易被听感感知。
+
+### 三、收音机失真效果调研结论
+
+- 已检查项目本地 PICO 文档和 SDK 相关说明：
+  - `ObjectAudioComponent` 支持音量、reverb、directivity、distance attenuation。
+  - `AudioMixerGroupResource` 支持统一音量与 playback speed。
+  - 未发现实时 distortion、EQ、band-pass、bitcrush、滤波器或可插拔音频效果链 API。
+- Android 侧虽然存在部分 `AudioEffect` 类，但当前 PICO `AudioPlayerController` 未暴露 Android audio session id，不能可靠地把 Android 音效链挂到 PICO spatial audio 输出上。
+- 因此本阶段没有加入运行时代码模拟失真。
+
+### 四、编译情况
+
+- 已执行：`./gradlew :app:compileDebugKotlin`。
+- 结果：编译通过。
+
+### 五、后续建议
+
+- 推荐的收音机效果实现方式：离线生成“radio processed”版本 wav，例如 band-pass、轻微 saturation、noise/crackle，再用当前已验证的 spatial audio 链路播放。
+- 另一个可选方案：叠加一条很低音量的空间化 radio static / crackle 素材，让噪声与 boombox 实体一起移动。
+- 不建议当前直接尝试 Android `AudioEffect` 接入 PICO spatial audio，风险是无法绑定 spatial audio session，且可能破坏已验证的空间声源链路。

@@ -79,50 +79,6 @@ def Xform "Root"
         }
     }
 
-    def "box" (
-        prepend references = @../Assets/box.usdz@
-    )
-    {
-        custom token visibility = "inherited"
-        quatf xformOp:orient = (1, 0, 0, 0)
-        float3 xformOp:scale = (1, 1, 1)
-        float3 xformOp:translate = (0, 0, 0)
-        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
-    }
-
-    def "Toy_Robot_2_Anim" (
-        prepend references = @../Assets/Toy Robot 2_Anim.usdz@
-    )
-    {
-        token visibility = "inherited"
-        quatf xformOp:orient = (0.7071068, -0.7071067, 6.181724e-8, 6.181724e-8) (
-            customData = {
-                float3 euler = (-90, 180, 180)
-            }
-        )
-        float3 xformOp:scale = (1, 0.99999976, 0.99999976)
-        float3 xformOp:translate = (-0.09371328, 0, -0.8330562)
-        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
-
-        over "Robot_001"
-        {
-            over "Mesh_001"
-            {
-                over "Mesh_001"
-                {
-                    quatf xformOp:orient = (0.99999946, -1.8398463e-18, -3.5766657e-15, -0.0010358008) (
-                        customData = {
-                            float3 euler = (0, -0, -0.115577)
-                        }
-                    )
-                    float3 xformOp:scale = (1.0000005, 1, 1)
-                    float3 xformOp:translate = (-0.0000021422454, 0.0000022683066, 4.768371e-7)
-                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
-                }
-            }
-        }
-    }
-
     def "Football" (
         prepend references = @../Assets/Football.usdz@
     )
@@ -155,7 +111,7 @@ def Xform "Root"
             def SpatialStruct "shapes0"
             {
                 float3 center = (-0.00010161847, -0.0001484789, 0.10460185)
-                uint64 id = 3
+                uint64 id = 5
                 uint64 info:typeId = 4878244361267076049
                 bool isConvexMesh = 1
                 quatf rotation = (1, 0, 0, 0)
@@ -193,6 +149,30 @@ def Xform "Root"
         {
             uniform token info:id = "RigidBodyComponent"
             uint64 info:typeId = 16147621430493327242
+        }
+    }
+
+    def "Basketball" (
+        prepend references = @../Assets/Basketball.usdz@
+    )
+    {
+        quatf xformOp:orient = (0.7071068, -0.7071067, 0, 0)
+        float3 xformOp:scale = (1, 0.99999994, 0.99999994)
+        float3 xformOp:translate = (-0.74734396, 0, 0.11477584)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+
+    def Xform "MyMaterials"
+    {
+        over "OcclusionMaterial" (
+            customData = {
+                bool applyToneMapping = 1
+                string materialType = "SHADER_GRAPH"
+                float opacityThreshold = 0
+                string shaderGraphGuid = "7b41e90f-6d64-4a01-b96c-e273992144cf"
+            }
+        )
+        {
         }
     }
 }

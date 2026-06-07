@@ -31,9 +31,11 @@ import com.example.matefairy01.input.InputControllerManager
 import com.example.matefairy01.interaction.InteractionActionSystem
 import com.example.matefairy01.interaction.InteractionActorComponent
 import com.example.matefairy01.interaction.InteractionObjectComponent
+import com.example.matefairy01.interaction.PickedObjectFollowSystem
 import com.example.matefairy01.perception.SpatialMeshManager
 import com.example.matefairy01.runtime.MateFairyRuntime
 import com.example.matefairy01.runtime.MateFairyRuntimeFactory
+import com.example.matefairy01.ui.DebugActionPanel
 import com.example.matefairy01.ui.FairyDialogueUI
 import com.example.matefairy01.ui.GameUIContainer
 import com.example.matefairy01.ui.SharedUIManager
@@ -44,9 +46,6 @@ import com.pico.spatial.core.ecs.PhysicsWorldComponent
 import com.pico.spatial.core.ecs.PhysicsForceComponent
 import com.pico.spatial.core.ecs.PhysicsVelocityComponent
 import com.pico.spatial.core.ecs.RigidBodyComponent
-import com.pico.spatial.core.ecs.simulation.CollisionDetectionMode
-import com.pico.spatial.core.ecs.simulation.CollisionFilter
-import com.pico.spatial.core.ecs.simulation.CollisionInfoDetailLevel
 import com.pico.spatial.core.ecs.simulation.RigidBodyMode
 import com.pico.spatial.core.ecs.CollisionComponent
 import com.pico.spatial.core.ecs.simulation.CollisionResponseMode
@@ -70,6 +69,7 @@ import com.pico.spatial.ui.platform.meters
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
@@ -83,8 +83,10 @@ private class HomeStageRuntimeState {
     var loadedRobotModelEntity: Entity? = null
     var dialogueAttachmentEntity: Entity? = null
     var userInputAttachmentEntity: Entity? = null
+    var debugActionAttachmentEntity: Entity? = null
     var editorSceneEntity: Entity? = null
-    var footballEntity: Entity? = null
+    var footballEntity: Entity? by mutableStateOf(null)
+    var basketballEntity: Entity? by mutableStateOf(null)
 }
 
 const val DEFAULT_TEST_DIALOGUE_TEXT = "你好！我是你的MateFairy。"
@@ -131,6 +133,7 @@ fun HomeStage() {
         BehaviorRuntimeDependencies.bindAvatarController(runtime.avatarController)
         onDispose {
             runtime.avatarController.cleanup()
+            runtime.musicModule.destroy()
             BehaviorRuntimeDependencies.clear()
         }
     }
@@ -217,7 +220,8 @@ fun HomeStage() {
         handTrackingProvider.start()
         registerSystem<FairyBehaviorSystem>()
         registerSystem<InteractionActionSystem>()
-        registerSystem<FootballPhysicsActivationSystem>()
+        registerSystem<PickedObjectFollowSystem>()
+        registerSystem<ResourcePhysicsActivationSystem>()
 
         val handTrackingJob = scope.launch {
             handTrackingProvider.dataFlow.collect { trackingData ->
@@ -227,7 +231,8 @@ fun HomeStage() {
 
         onDispose {
             handTrackingJob.cancel()
-            unregisterSystem<FootballPhysicsActivationSystem>()
+            unregisterSystem<ResourcePhysicsActivationSystem>()
+            unregisterSystem<PickedObjectFollowSystem>()
             unregisterSystem<InteractionActionSystem>()
             unregisterSystem<FairyBehaviorSystem>()
             hmdTrackingProvider.stop()
@@ -249,10 +254,18 @@ fun HomeStage() {
                         context = context,
                         targetedToEntity = TargetEntity.any { entity -> entity == football }
                     ) {
-                        // 给足球施加一个弹飞的速度（向上和向后）
-                        val velocityComp = football.components[com.pico.spatial.core.ecs.PhysicsVelocityComponent::class.java] 
-                            ?: com.pico.spatial.core.ecs.PhysicsVelocityComponent().also { football.components.set(it) }
-                        velocityComp.linearVelocity = Vector3(0f, 3.0f, -3.0f)
+                        applyBallTapImpulse(football)
+                    }
+                }
+            }
+            .pointerInput(runtimeState.basketballEntity) {
+                val basketball = runtimeState.basketballEntity
+                if (basketball != null) {
+                    detectSpatialTapGesture(
+                        context = context,
+                        targetedToEntity = TargetEntity.any { entity -> entity == basketball }
+                    ) {
+                        applyBallTapImpulse(basketball)
                     }
                 }
             },
@@ -285,6 +298,21 @@ fun HomeStage() {
 
                 inputEntity.components[TransformComponent::class.java]?.apply {
                     setPosition(Vector3(0f, -0.15f, -0.65f))
+                    setQuaternion(Quat.identity())
+                }
+            }
+
+            attachments.entity("debug_action_panel")?.let { debugEntity ->
+                if (runtimeState.debugActionAttachmentEntity != debugEntity) {
+                    runtimeState.debugActionAttachmentEntity = debugEntity
+                    if (debugEntity.components[TransformComponent::class.java] == null) {
+                        debugEntity.components[TransformComponent::class.java] = TransformComponent()
+                    }
+                    hmdEntity.addChild(debugEntity)
+                }
+
+                debugEntity.components[TransformComponent::class.java]?.apply {
+                    setPosition(Vector3(0.44f, -0.32f, -0.85f))
                     setQuaternion(Quat.identity())
                 }
             }
@@ -322,14 +350,19 @@ fun HomeStage() {
             // 且之前的直接获取机制会导致 null 的生命周期问题
             // 所以我们这里只加载基础包，完全依赖 update 闭包来实时扫描和挂载 Attachments
 
-            val (bundle, glbRoot) = coroutineScope {
+            val (bundle, glbRoot, staticAssetRoots) = coroutineScope {
                 val bundleDeferred = async(Dispatchers.IO) {
                     com.pico.spatial.core.ecs.resource.AssetBundle.load("asset://editor-asset.bundle")
                 }
                 val glbDeferred = async(Dispatchers.IO) {
                     Entity.load("asset://pico_robot_animated.glb")
                 }
-                bundleDeferred.await() to glbDeferred.await()
+                val staticAssetDeferreds = STARTUP_STATIC_ASSETS.map { spec ->
+                    async {
+                        spec to Entity.loadSuspend(spec.assetUri)
+                    }
+                }
+                Triple(bundleDeferred.await(), glbDeferred.await(), staticAssetDeferreds.awaitAll())
             }
             val model = Entity()
 
@@ -353,7 +386,14 @@ fun HomeStage() {
             runtimeState.footballEntity = football
             football?.let {
                 it.components.set(InteractionObjectComponent(objectId = "football", tags = setOf("sports", "physics")))
-                configureFootballPhysics(it)
+                ResourcePhysicsConfigurator.configureFootball(it)
+            }
+
+            val basketball = sceneModel.findEntity("Basketball")
+            runtimeState.basketballEntity = basketball
+            basketball?.let {
+                it.components.set(InteractionObjectComponent(objectId = "basketball", tags = setOf("sports", "physics")))
+                ResourcePhysicsConfigurator.configureBasketball(it)
             }
 
             model.apply {
@@ -457,6 +497,13 @@ fun HomeStage() {
             // 将 Editor 里编辑好的整个场景加到现实房间的中心（原点）
             rootEntity.addChild(sceneModel)
 
+            // 直接从 APK assets 加载新增 GLB；GLB 根实体挂到 wrapper 上，便于统一控制位置/缩放。
+            staticAssetRoots.forEach { (spec, assetRoot) ->
+                val startupAsset = createStartupStaticAsset(spec, assetRoot)
+                rootEntity.addChild(startupAsset)
+                Log.i(HOME_STAGE_TAG, "Loaded startup static asset: ${spec.assetUri}")
+            }
+
             // 设置对话文本附件位置（精灵头顶）
             // 在 SDK 新版本中，不再需要在 initial 中预挂载 attachments，
             // 全部由 update 中扫描补齐
@@ -491,43 +538,75 @@ fun HomeStage() {
                     GameUIContainer()
                 }
             }
+
+            AttachmentPanel(id = "debug_action_panel") {
+                DebugActionPanel()
+            }
         }
     )
 }
 
-private fun configureFootballPhysics(football: Entity) {
-    val existingCollision = football.components[CollisionComponent::class.java]
-    val shapes = existingCollision?.collisionShape?.takeIf { it.isNotEmpty() }
-        ?: listOf(ShapeResource.createSphere(FOOTBALL_COLLIDER_RADIUS))
-
-    football.components.set(
-        CollisionComponent(
-            collisionShape = shapes,
-            physicsMaterial = PhysicsMaterialResource(),
-            collisionResponseMode = CollisionResponseMode.COLLIDER_FULL,
-            collisionFilter = CollisionFilter.COLLISION_FILTER_DEFAULT,
-            collisionInfoDetailLevel = CollisionInfoDetailLevel.BRIEF
-        )
-    )
-
-    val rigidBody = football.components[RigidBodyComponent::class.java] ?: RigidBodyComponent()
-    rigidBody.apply {
-        rigidBodyMode = RigidBodyMode.DYNAMIC
-        isAffectedByGravity = false
-        collisionDetectionMode = CollisionDetectionMode.CONTINUOUS
-        linearDamping = 0.2f
-        angularDamping = 0.2f
-    }
-    football.components.set(rigidBody)
-
-    football.components.set(
-        FootballPhysicsActivationComponent(radius = FOOTBALL_COLLIDER_RADIUS)
-    )
+private fun applyBallTapImpulse(ball: Entity) {
+    val velocityComp = ball.components[PhysicsVelocityComponent::class.java]
+        ?: PhysicsVelocityComponent().also { ball.components.set(it) }
+    velocityComp.linearVelocity = Vector3(0f, 3.0f, -3.0f)
 }
 
-private const val FOOTBALL_COLLIDER_RADIUS = 0.11f
 private const val OCCLUSION_MATERIAL_PATH = "MyScene/Root/MyMaterials/OcclusionMaterial"
 private const val HOME_STAGE_TAG = "HomeStage"
+
+private data class StartupStaticAssetSpec(
+    val assetUri: String,
+    val objectId: String,
+    val position: Vector3,
+    val visualScale: Float,
+    val floorOffset: Float,
+    val configurePhysics: (Entity) -> Unit
+)
+
+private val STARTUP_STATIC_ASSETS = listOf(
+    StartupStaticAssetSpec(
+        assetUri = "asset://boombox_new.glb",
+        objectId = "boombox",
+        position = Vector3(-0.45f, 0.3f, -1.55f),
+        visualScale = 0.45f,
+        floorOffset = 0.11f,
+        configurePhysics = ResourcePhysicsConfigurator::configureBoombox
+    ),
+    StartupStaticAssetSpec(
+        assetUri = "asset://rubber_duck_toy.glb",
+        objectId = "rubber_duck_toy",
+        position = Vector3(0.45f, 0.35f, -1.45f),
+        visualScale = 0.9f,
+        floorOffset = 0.13f,
+        configurePhysics = ResourcePhysicsConfigurator::configureRubberDuck
+    )
+)
+
+private fun createStartupStaticAsset(spec: StartupStaticAssetSpec, assetRoot: Entity): Entity {
+    return Entity().apply {
+        components[TransformComponent::class.java] = TransformComponent().apply {
+            setPosition(spec.position)
+            scaleVector = Vector3(1f, 1f, 1f)
+        }
+        components.set(
+            InteractionObjectComponent(
+                objectId = spec.objectId,
+                tags = setOf("startup_asset", "physics")
+            )
+        )
+        spec.configurePhysics(this)
+
+        val visualEntity = Entity().apply {
+            components[TransformComponent::class.java] = TransformComponent().apply {
+                setPosition(Vector3(0f, -spec.floorOffset, 0f))
+                scaleVector = Vector3(spec.visualScale, spec.visualScale, spec.visualScale)
+            }
+            addChild(assetRoot)
+        }
+        addChild(visualEntity)
+    }
+}
 
 /**
  * 处理用户输入并调用 AI

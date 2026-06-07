@@ -243,8 +243,12 @@ class DeepSeekLLMProvider(
             3. emotion 只能从 $emotionsStr 中选择。
             4. action_intent 只能从 $actionsStr 中选择。
             5. 如果用户要求“踢球”“玩足球”“去碰/踢 Football”，即使同时要求跳舞、挥手等其它动作，action_intent 也必须输出 "play-football"。
-            6. 如果用户同时表达辱骂、贬低、攻击等负面冒犯，emotion 必须输出 "angry"，action_intent 仍可识别为 "play-football"，程序侧会优先执行负面情绪动画。
-            7. 不要输出 JSON 对象之外的任何字符。
+            6. 如果用户要求“打开音响”“启动音响”“播放音乐”“打开 boombox”，action_intent 必须输出 "start-boombox"。
+            7. 如果用户要求“关闭音响”“停止音乐”“关掉 boombox”，action_intent 必须输出 "stop-boombox"。
+            8. 如果用户要求“捏小黄鸭”“挤小黄鸭”“让鸭子叫”“rubber duck”，action_intent 必须输出 "squeeze-rubber-duck"。
+            9. 如果用户要求“放下小黄鸭”“放下鸭子”，action_intent 必须输出 "put-down-rubber-duck"。
+            10. 如果用户同时表达辱骂、贬低、攻击等负面冒犯，emotion 必须输出 "angry"，action_intent 仍可识别为对应 action，程序侧会优先执行负面情绪动画。
+            11. 不要输出 JSON 对象之外的任何字符。
         """.trimIndent()
     }
 
@@ -315,7 +319,11 @@ class DeepSeekLLMProvider(
             4. action_intent 只能从 $actionsStr 中选择。
             5. 字段顺序必须严格为：status、reply_text、emotion、action_intent。
             6. 如果用户要求“踢球”“玩足球”“去碰/踢 Football”，即使同时要求跳舞、挥手等其它动作，action_intent 也必须输出 "play-football"。
-            7. 如果用户同时表达辱骂、贬低、攻击等负面冒犯，emotion 必须输出 "angry"，action_intent 仍可识别为 "play-football"，程序侧会优先执行负面情绪动画。
+            7. 如果用户要求“打开音响”“启动音响”“播放音乐”“打开 boombox”，action_intent 必须输出 "start-boombox"。
+            8. 如果用户要求“关闭音响”“停止音乐”“关掉 boombox”，action_intent 必须输出 "stop-boombox"。
+            9. 如果用户要求“捏小黄鸭”“挤小黄鸭”“让鸭子叫”“rubber duck”，action_intent 必须输出 "squeeze-rubber-duck"。
+            10. 如果用户要求“放下小黄鸭”“放下鸭子”，action_intent 必须输出 "put-down-rubber-duck"。
+            11. 如果用户同时表达辱骂、贬低、攻击等负面冒犯，emotion 必须输出 "angry"，action_intent 仍可识别为对应 action，程序侧会优先执行负面情绪动画。
 
             【情绪意图(emotion)与回复(reply_text)的统一规则】
             注意：为了避免表现割裂，精灵的语言回复（`reply_text`）必须与 `emotion` 的状态严格保持一致！
