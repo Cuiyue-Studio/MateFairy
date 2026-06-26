@@ -23,3 +23,12 @@ editor-asset/build/
 # Cache data
 .CacheData/
 
+# Local debug/runtime artifacts
+.dbg/
+.kotlin/errors/*.log
+emu-last-feature-flags.protobuf
+报错日志.txt
+
+# Local device keys
+adbkey
+adbkey.pub

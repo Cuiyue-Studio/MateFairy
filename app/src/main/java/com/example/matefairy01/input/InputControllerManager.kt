@@ -124,6 +124,19 @@ class InputControllerManager(
         doubleClickRunnable = null
     }
 
+    /**
+     * 外部输入源（如手势检测）复用手柄双击打开文本输入框的同一条链路。
+     */
+    fun requestTextInput() {
+        cancelPendingDoubleClickDetection()
+        clickCount = 0
+        if (voiceInputProvider.isListening() || textInputProvider.isListening()) {
+            Log.d(TAG, "Skip text input request because another input provider is active")
+            return
+        }
+        startTextInput()
+    }
+
     private fun startTextInput() {
         Log.d(TAG, "Starting text input")
         activeInputProvider = textInputProvider

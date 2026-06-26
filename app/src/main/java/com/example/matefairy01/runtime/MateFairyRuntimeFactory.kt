@@ -11,6 +11,8 @@ import com.example.matefairy01.audio.MusicModule
 import com.example.matefairy01.avatar.DefaultAvatarController
 import com.example.matefairy01.behavior.FairyFollowControlModule
 import com.example.matefairy01.config.AppConfig
+import com.example.matefairy01.debug.BufferedHttpDebugEventReporter
+import com.example.matefairy01.debug.DebugRuntimeDependencies
 import com.example.matefairy01.emotion.AvatarEmotionRenderer
 import com.example.matefairy01.emotion.EmotionEngine
 import com.example.matefairy01.interaction.InteractionActionRuntimeDependencies
@@ -38,6 +40,8 @@ import com.example.matefairy01.ml.IEmbedder
 import com.example.matefairy01.orchestrator.ConversationOrchestrator
 import com.example.matefairy01.orchestrator.adapters.ActionRegistryPortAdapter
 import com.example.matefairy01.orchestrator.adapters.EmotionEnginePortAdapter
+import com.example.matefairy01.playerinteraction.PinchShakeAngryPlayerFairyActionController
+import com.example.matefairy01.playerinteraction.PlayerFairyInteractionRuntimeDependencies
 
 /**
  * 集中组装当前应用运行时所需的核心依赖，替代散落在场景层和全局单例中的装配逻辑。
@@ -55,6 +59,12 @@ object MateFairyRuntimeFactory {
 
     fun create(context: Context, appConfig: AppConfig): MateFairyRuntime {
         // ----- 基础设施 -----
+        // #region debug-point DBG:boombox-drop-drift-reporter
+        DebugRuntimeDependencies.reporter = BufferedHttpDebugEventReporter(
+            endpoint = "http://10.4.93.9:7777/event"
+        )
+        // #endregion
+
         val localTools = buildList {
             if (appConfig.webSearch.enabled) {
                 add(com.example.matefairy01.tools.WebSearchTool(appConfig.webSearch))
@@ -68,15 +78,25 @@ object MateFairyRuntimeFactory {
         val avatarController = DefaultAvatarController(animationModule)
         val musicModule = MusicModule(context).apply {
             setSpatialMusicPlaylist(BOOMBOX_SPATIAL_MUSIC_PLAYLIST)
+            setRubberDuckSfxList(RUBBER_DUCK_SFX_LIST)
         }
 
         val emotionRenderer = AvatarEmotionRenderer(animationModule)
         val emotionEngine = EmotionEngine(emotionRenderer)
-        InteractionActionRuntimeDependencies.actionRegistry.register(PlayFootballActionController())
-        InteractionActionRuntimeDependencies.actionRegistry.register(StartBoomboxActionController(musicModule))
-        InteractionActionRuntimeDependencies.actionRegistry.register(StopBoomboxActionController(musicModule))
+        InteractionActionRuntimeDependencies.actionRegistry.register(PlayFootballActionController(animationModule))
+        InteractionActionRuntimeDependencies.actionRegistry.register(
+            StartBoomboxActionController(musicModule, animationModule)
+        )
+        InteractionActionRuntimeDependencies.actionRegistry.register(
+            StopBoomboxActionController(musicModule, animationModule)
+        )
+        // Dialogue-triggered squeeze-rubber-duck is enabled; random and direct gesture entry
+        // points remain disabled elsewhere for controlled testing.
         InteractionActionRuntimeDependencies.actionRegistry.register(SqueezeRubberDuckActionController(musicModule))
         InteractionActionRuntimeDependencies.actionRegistry.register(PutDownRubberDuckActionController())
+        PlayerFairyInteractionRuntimeDependencies.actionRegistry.register(
+            PinchShakeAngryPlayerFairyActionController(animationModule)
+        )
 
         val actionRegistry = ActionRegistry().apply {
             AnimationConfig.supportedActions.filter { it != "none" }.forEach { intent ->
@@ -103,6 +123,8 @@ object MateFairyRuntimeFactory {
                     defaultObjectIds = listOf(StartBoomboxActionController.DEFAULT_OBJECT_ID)
                 )
             )
+            // Dialogue-triggered squeeze-rubber-duck is enabled; random and direct gesture entry
+            // points remain disabled elsewhere for controlled testing.
             register(
                 SceneInteractionActionHandler(
                     intent = SqueezeRubberDuckActionController.ACTION_ID,
@@ -183,6 +205,7 @@ object MateFairyRuntimeFactory {
             conversationOrchestrator = conversationOrchestrator,
             avatarController = avatarController,
             animationModule = animationModule,
+            playerFairyInteractionScheduler = PlayerFairyInteractionRuntimeDependencies.scheduler,
             mcpManager = mcpManager,
             embedder = embedder,
             database = database,
@@ -199,5 +222,9 @@ object MateFairyRuntimeFactory {
     private val BOOMBOX_SPATIAL_MUSIC_PLAYLIST = listOf(
         "Dying_Me_instrumental.wav",
         "火星时代教育.wav"
+    )
+
+    private val RUBBER_DUCK_SFX_LIST = listOf(
+        "rubber_duck_voice.mp3"
     )
 }

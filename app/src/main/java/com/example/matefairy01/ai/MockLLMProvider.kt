@@ -39,6 +39,14 @@ class MockLLMProvider : ILLMProvider {
             lastUserMessage.contains("放下小黄鸭") || lastUserMessage.contains("放下鸭子") -> {
                 Triple("好，我把小黄鸭放下来。", "neutral", "put-down-rubber-duck")
             }
+            lastUserMessage.contains("离开椅子") || lastUserMessage.contains("从椅子上下来") ||
+                lastUserMessage.contains("别待在椅子") || lastUserMessage.contains("回来") -> {
+                Triple("好，我离开椅子。", "neutral", "leave-chair")
+            }
+            lastUserMessage.contains("椅子") || lastUserMessage.contains("坐到椅子") ||
+                lastUserMessage.contains("去椅子") || lastUserMessage.contains("待在椅子") -> {
+                Triple("好呀，我去椅子上待一会儿。", "neutral", "stay-on-chair")
+            }
             lastUserMessage.contains("捏小黄鸭") || lastUserMessage.contains("挤小黄鸭") ||
                 lastUserMessage.contains("让鸭子叫") || lastUserMessage.contains("rubber duck", ignoreCase = true) -> {
                 Triple("好呀，我去捏捏小黄鸭！", "happy", "squeeze-rubber-duck")

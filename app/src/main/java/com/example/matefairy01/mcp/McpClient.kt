@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.AtomicLong
  *  - 响应可能为 application/json 或 text/event-stream (SSE)
  *  - 若 server 返回 Mcp-Session-Id 响应头，后续请求带上
  *
- * 协议参考：https://spec.modelcontextprotocol.io/specification/2024-11-05/
+ * 协议参考：https://modelcontextprotocol.io/specification/2025-03-26/
  */
 class McpClient(
     private val config: McpServerConfig,
@@ -34,7 +34,7 @@ class McpClient(
 ) {
     companion object {
         private const val TAG = "McpClient"
-        private const val PROTOCOL_VERSION = "2024-11-05"
+        private const val PROTOCOL_VERSION = "2025-03-26"
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 

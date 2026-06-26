@@ -1,7 +1,9 @@
 package com.example.matefairy01.interaction
 
+import com.example.matefairy01.playerinteraction.PlayerFairyInteractionComponent
 import com.pico.spatial.core.ecs.Component
 import com.pico.spatial.core.ecs.CollisionComponent
+import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.ecs.EntityQueryCondition
 import com.pico.spatial.core.ecs.PhysicsForceComponent
 import com.pico.spatial.core.ecs.PhysicsVelocityComponent
@@ -31,6 +33,10 @@ class PickedObjectFollowSystem : System() {
         context.scene.queryEntity(pickedCondition).forEach { picked ->
             val follow = picked.components[PickedObjectFollowComponent::class.java] ?: return@forEach
             val holder = InteractionEntityResolver.findActor(context.scene, follow.holderActorId) ?: return@forEach
+            if (holder.components[PlayerFairyInteractionComponent::class.java] != null) {
+                releasePickedObject(picked, follow, holder)
+                return@forEach
+            }
             val holderTransform = holder.components[TransformComponent::class.java] ?: return@forEach
             val pickedTransform = picked.components[TransformComponent::class.java] ?: return@forEach
 
@@ -45,7 +51,10 @@ class PickedObjectFollowSystem : System() {
                 collision.collisionResponseMode = CollisionResponseMode.TRIGGER_LITE
             }
             picked.components[PhysicsForceComponent::class.java]?.force = Vector3.ZERO
-            picked.components[PhysicsVelocityComponent::class.java]?.linearVelocity = Vector3.ZERO
+            picked.components[PhysicsVelocityComponent::class.java]?.let { velocity ->
+                velocity.linearVelocity = Vector3.ZERO
+                velocity.angularVelocity = Vector3.ZERO
+            }
 
             val worldOffset = rotateByYaw(follow.localOffset, holderTransform.eulerAngles.yaw)
             pickedTransform.position = Vector3(
@@ -53,6 +62,35 @@ class PickedObjectFollowSystem : System() {
                 holderTransform.position.y + worldOffset.y,
                 holderTransform.position.z + worldOffset.z
             )
+        }
+    }
+
+    private fun releasePickedObject(
+        picked: Entity,
+        follow: PickedObjectFollowComponent,
+        holder: Entity
+    ) {
+        val holderTransform = holder.components[TransformComponent::class.java]
+        val pickedTransform = picked.components[TransformComponent::class.java]
+        if (holderTransform != null && pickedTransform != null) {
+            val dropOffset = rotateByYaw(SAFE_DROP_LOCAL_OFFSET, holderTransform.eulerAngles.yaw)
+            pickedTransform.position = Vector3(
+                holderTransform.position.x + dropOffset.x,
+                holderTransform.position.y + dropOffset.y,
+                holderTransform.position.z + dropOffset.z
+            )
+        }
+        picked.components.remove(PickedObjectFollowComponent::class.java)
+        picked.components[CollisionComponent::class.java]?.collisionResponseMode =
+            follow.previousCollisionResponseMode ?: CollisionResponseMode.COLLIDER_FULL
+        picked.components[RigidBodyComponent::class.java]?.let { rigidBody ->
+            rigidBody.rigidBodyMode = RigidBodyMode.DYNAMIC
+            rigidBody.isAffectedByGravity = true
+        }
+        picked.components[PhysicsForceComponent::class.java]?.force = Vector3.ZERO
+        picked.components[PhysicsVelocityComponent::class.java]?.let { velocity ->
+            velocity.linearVelocity = Vector3.ZERO
+            velocity.angularVelocity = Vector3.ZERO
         }
     }
 
@@ -65,5 +103,9 @@ class PickedObjectFollowSystem : System() {
             offset.y,
             offset.x * sinValue + offset.z * cosValue
         )
+    }
+
+    private companion object {
+        val SAFE_DROP_LOCAL_OFFSET = Vector3(0f, -0.18f, 0.5f)
     }
 }

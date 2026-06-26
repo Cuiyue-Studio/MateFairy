@@ -31,6 +31,7 @@ enum class McpTransportType {
  *     "type": "streamableHttp",
  *     "url": "http://192.168.1.100:3000/mcp",
  *     "headers": { "Authorization": "Bearer xxx" },
+ *     "enabled": true,
  *     "toolTimeoutMs": 30000,
  *     "enabledTools": ["*"]
  *   }
@@ -42,6 +43,7 @@ data class McpServerConfig(
     val type: McpTransportType = McpTransportType.STREAMABLE_HTTP,
     val url: String,
     val headers: Map<String, String> = emptyMap(),
+    val enabled: Boolean = true,
     val connectTimeoutMs: Long = 10_000L,
     val readTimeoutMs: Long = 60_000L,
     val toolTimeoutMs: Long = 30_000L,

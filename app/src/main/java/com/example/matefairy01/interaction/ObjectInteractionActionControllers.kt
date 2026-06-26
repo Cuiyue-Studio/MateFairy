@@ -1,7 +1,10 @@
 package com.example.matefairy01.interaction
 
 import android.util.Log
+import com.example.matefairy01.animation.ActionAnimationScheduler
+import com.example.matefairy01.animation.FairyAnimation
 import com.example.matefairy01.audio.MusicModule
+import com.example.matefairy01.playerinteraction.PlayerFairyInteractionComponent
 import com.pico.spatial.core.ecs.CollisionComponent
 import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.ecs.PhysicsForceComponent
@@ -20,7 +23,8 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 class StartBoomboxActionController(
-    private val musicModule: MusicModule
+    private val musicModule: MusicModule,
+    private val actionAnimationScheduler: ActionAnimationScheduler
 ) : InteractionActionController {
     override val actionId: String = ACTION_ID
 
@@ -37,6 +41,13 @@ class StartBoomboxActionController(
             ),
             onUse = { boombox ->
                 playObjectAnimation(boombox)
+                val scheduled = actionAnimationScheduler.startLoopingActionAnimation(
+                    ownerActionId = actionId,
+                    animation = FairyAnimation.DISCO_DANCING_ACTION
+                )
+                if (!scheduled) {
+                    Log.w(TAG, "Boombox disco animation was not scheduled for action=$actionId")
+                }
                 musicModule.playNextSpatialMusicAt(boombox)
             }
         )
@@ -49,7 +60,8 @@ class StartBoomboxActionController(
 }
 
 class StopBoomboxActionController(
-    private val musicModule: MusicModule
+    private val musicModule: MusicModule,
+    private val actionAnimationScheduler: ActionAnimationScheduler
 ) : InteractionActionController {
     override val actionId: String = ACTION_ID
 
@@ -58,6 +70,7 @@ class StopBoomboxActionController(
             request = request,
             defaultObjectId = StartBoomboxActionController.DEFAULT_OBJECT_ID,
             onBeforePutDown = { boombox ->
+                actionAnimationScheduler.stopLoopingActionAnimation(StartBoomboxActionController.ACTION_ID)
                 playObjectAnimation(boombox)
                 musicModule.stopSpatialMusic()
             }
@@ -86,7 +99,7 @@ class SqueezeRubberDuckActionController(
                 finishAfterUse = true
             ),
             onUse = { duck ->
-                playObjectAnimation(duck)
+                playObjectAnimation(duck, maxDurationMs = RUBBER_DUCK_ANIMATION_DURATION_MS)
                 musicModule.playRandomRubberDuckSfxAt(duck)
             }
         )
@@ -195,7 +208,10 @@ private class CarryAndUseObjectActionInstance(
                     rigidBody.isAffectedByGravity = false
                 }
                 target.components[PhysicsForceComponent::class.java]?.force = Vector3.ZERO
-                target.components[PhysicsVelocityComponent::class.java]?.linearVelocity = Vector3.ZERO
+                target.components[PhysicsVelocityComponent::class.java]?.let { velocity ->
+                    velocity.linearVelocity = Vector3.ZERO
+                    velocity.angularVelocity = Vector3.ZERO
+                }
                 state = CarryUseState.USING
                 InteractionActionStatus.RUNNING
             }
@@ -227,7 +243,10 @@ private class CarryAndUseObjectActionInstance(
     }
 
     override fun cancel() {
-        activeSubject?.let(::restoreSubjectMotion)
+        activeSubject?.let { subject ->
+            restoreSubjectMotion(subject)
+            subject.components.remove(FairyActionLockComponent::class.java)
+        }
         Log.d(TAG, "Cancel carry/use action: $actionId")
     }
 
@@ -239,15 +258,23 @@ private class CarryAndUseObjectActionInstance(
         rigidBody.rigidBodyMode = RigidBodyMode.KINEMATIC
         rigidBody.isAffectedByGravity = false
         subject.components[PhysicsForceComponent::class.java]?.force = Vector3.ZERO
-        subject.components[PhysicsVelocityComponent::class.java]?.linearVelocity = Vector3.ZERO
+        subject.components[PhysicsVelocityComponent::class.java]?.let { velocity ->
+            velocity.linearVelocity = Vector3.ZERO
+            velocity.angularVelocity = Vector3.ZERO
+        }
     }
 
     private fun restoreSubjectMotion(subject: Entity) {
         subject.components[PhysicsForceComponent::class.java]?.force = Vector3.ZERO
-        subject.components[PhysicsVelocityComponent::class.java]?.linearVelocity = Vector3.ZERO
-        subject.components[RigidBodyComponent::class.java]?.let { rigidBody ->
-            rigidBody.rigidBodyMode = previousSubjectRigidBodyMode ?: RigidBodyMode.DYNAMIC
-            rigidBody.isAffectedByGravity = false
+        subject.components[PhysicsVelocityComponent::class.java]?.let { velocity ->
+            velocity.linearVelocity = Vector3.ZERO
+            velocity.angularVelocity = Vector3.ZERO
+        }
+        if (subject.components[PlayerFairyInteractionComponent::class.java] == null) {
+            subject.components[RigidBodyComponent::class.java]?.let { rigidBody ->
+                rigidBody.rigidBodyMode = previousSubjectRigidBodyMode ?: RigidBodyMode.KINEMATIC
+                rigidBody.isAffectedByGravity = false
+            }
         }
         previousSubjectRigidBodyMode = null
     }
@@ -263,6 +290,8 @@ private class PutDownObjectActionInstance(
     private val objectId = request.objectIds.firstOrNull() ?: defaultObjectId
     private var hasPutDown = false
     private var finishTimerSeconds = 0f
+    private var activeSubject: Entity? = null
+    private val subjectMotion = ActionSubjectMotionTemplate()
 
     override fun update(context: SceneUpdateContext): InteractionActionStatus {
         val subject = InteractionEntityResolver.findActor(context.scene, request.subjectId)
@@ -275,6 +304,8 @@ private class PutDownObjectActionInstance(
             ?: return InteractionActionStatus.FAILED
 
         subject.components.set(FairyActionLockComponent(actionId))
+        activeSubject = subject
+        subjectMotion.prepare(subject)
 
         if (!hasPutDown) {
             clearSubjectForce(subject)
@@ -285,26 +316,88 @@ private class PutDownObjectActionInstance(
                 follow?.previousCollisionResponseMode ?: CollisionResponseMode.COLLIDER_FULL
             val forward = forwardFromYaw(subjectTransform.eulerAngles.yaw)
             targetTransform.position = Vector3(
-                subjectTransform.position.x + forward.x * 0.42f,
-                subjectTransform.position.y - 0.28f,
-                subjectTransform.position.z + forward.z * 0.42f
+                subjectTransform.position.x + forward.x * PUT_DOWN_FORWARD_DISTANCE,
+                subjectTransform.position.y + PUT_DOWN_VERTICAL_OFFSET,
+                subjectTransform.position.z + forward.z * PUT_DOWN_FORWARD_DISTANCE
             )
             target.components[RigidBodyComponent::class.java]?.let { rigidBody ->
                 rigidBody.rigidBodyMode = RigidBodyMode.DYNAMIC
                 rigidBody.isAffectedByGravity = true
             }
             target.components[PhysicsForceComponent::class.java]?.force = Vector3.ZERO
-            target.components[PhysicsVelocityComponent::class.java]?.linearVelocity = Vector3.ZERO
+            target.components[PhysicsVelocityComponent::class.java]?.let { velocity ->
+                velocity.linearVelocity = Vector3.ZERO
+                velocity.angularVelocity = Vector3.ZERO
+            }
+            // #region debug-point A:put-down-drop-state
+            debugBoomboxDrop(
+                hypothesisId = "A",
+                location = "ObjectInteractionActionControllers.kt:PutDownObjectActionInstance.drop",
+                message = "[DEBUG] put-down drop applied",
+                data = mapOf(
+                    "actionId" to actionId,
+                    "subjectPos" to subjectTransform.position.debugString(),
+                    "subjectRb" to (subject.components[RigidBodyComponent::class.java]?.rigidBodyMode?.toString() ?: "null"),
+                    "subjectCollision" to (subject.components[CollisionComponent::class.java]?.collisionResponseMode?.toString() ?: "null"),
+                    "targetPos" to targetTransform.position.debugString(),
+                    "targetRb" to (target.components[RigidBodyComponent::class.java]?.rigidBodyMode?.toString() ?: "null"),
+                    "targetCollision" to (target.components[CollisionComponent::class.java]?.collisionResponseMode?.toString() ?: "null"),
+                    "targetVelocity" to (target.components[PhysicsVelocityComponent::class.java]?.linearVelocity?.debugString() ?: "null"),
+                    "hadFollow" to (follow != null)
+                )
+            )
+            // #endregion
             hasPutDown = true
         }
 
         finishTimerSeconds += context.deltaTime
         return if (finishTimerSeconds >= 0.35f) {
-            subject.components.remove(FairyActionLockComponent::class.java)
+            // #region debug-point B:put-down-complete
+            debugBoomboxDrop(
+                hypothesisId = "B",
+                location = "ObjectInteractionActionControllers.kt:PutDownObjectActionInstance.complete",
+                message = "[DEBUG] put-down action completing",
+                data = mapOf(
+                    "actionId" to actionId,
+                    "subjectPos" to subjectTransform.position.debugString(),
+                    "targetPos" to targetTransform.position.debugString(),
+                    "subjectVelocity" to (subject.components[PhysicsVelocityComponent::class.java]?.linearVelocity?.debugString() ?: "null"),
+                    "targetVelocity" to (target.components[PhysicsVelocityComponent::class.java]?.linearVelocity?.debugString() ?: "null"),
+                    "finishTimer" to finishTimerSeconds
+                )
+            )
+            // #endregion
+            cleanupSubjectMotion(subject)
             InteractionActionStatus.COMPLETED
         } else {
             InteractionActionStatus.RUNNING
         }
+    }
+
+    override fun cancel() {
+        activeSubject?.let(::cleanupSubjectMotion)
+        activeSubject = null
+    }
+
+    private fun cleanupSubjectMotion(subject: Entity) {
+        subject.components.remove(FairyActionLockComponent::class.java)
+        subjectMotion.restore(subject)
+        // #region debug-point B:put-down-cleanup
+        debugBoomboxDrop(
+            hypothesisId = "B",
+            location = "ObjectInteractionActionControllers.kt:PutDownObjectActionInstance.cleanup",
+            message = "[DEBUG] put-down subject cleanup restored",
+            data = mapOf(
+                "actionId" to actionId,
+                "subjectPos" to (subject.components[TransformComponent::class.java]?.position?.debugString() ?: "null"),
+                "subjectRb" to (subject.components[RigidBodyComponent::class.java]?.rigidBodyMode?.toString() ?: "null"),
+                "subjectCollision" to (subject.components[CollisionComponent::class.java]?.collisionResponseMode?.toString() ?: "null"),
+                "subjectVelocity" to (subject.components[PhysicsVelocityComponent::class.java]?.linearVelocity?.debugString() ?: "null"),
+                "hasRecovery" to (subject.components[ActionRecoveryGraceComponent::class.java] != null)
+            )
+        )
+        // #endregion
+        activeSubject = null
     }
 }
 
@@ -366,14 +459,24 @@ private fun faceDirection(transform: TransformComponent, direction: Vector3, dt:
     )
 }
 
-private fun playObjectAnimation(entity: Entity, trackIndex: Int = 0) {
-    runCatching {
-        val resources = entity.getAnimationResources()
-        if (resources.isNotEmpty() && trackIndex in resources.indices) {
-            entity.playAnimation(resources[trackIndex])
-        }
-    }.onFailure {
-        Log.w(TAG, "Object animation is not ready for entity=${entity.getName()}", it)
+private fun playObjectAnimation(entity: Entity, trackIndex: Int = 0, maxDurationMs: Long? = null) {
+    val resources = runCatching { entity.getAnimationResources() }.getOrNull() ?: return
+    if (trackIndex !in resources.indices) return
+    val controller = entity.playAnimation(resources[trackIndex])
+    maxDurationMs?.takeIf { it > 0L }?.let { durationMs ->
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+            {
+                runCatching {
+                    if (controller.valid && controller.isPlaying()) {
+                        controller.stop()
+                    }
+                    if (controller.valid) {
+                        controller.close()
+                    }
+                }
+            },
+            durationMs
+        )
     }
 }
 
@@ -421,4 +524,31 @@ private fun Float.toRadians() = this * PI.toFloat() / 180f
 
 private fun Float.toDegrees() = this * 180f / PI.toFloat()
 
+// #region debug-point DBG:boombox-drop-reporter
+private fun debugBoomboxDrop(
+    hypothesisId: String,
+    location: String,
+    message: String,
+    data: Map<String, Any>
+) {
+    com.example.matefairy01.debug.DebugRuntimeDependencies.reporter.post(
+        com.example.matefairy01.debug.DebugEvent(
+            sessionId = "boombox-drop-drift",
+            runId = "post-fix-direct-motion",
+            hypothesisId = hypothesisId,
+            location = location,
+            message = message,
+            data = data
+        )
+    )
+}
+
+private fun Vector3.debugString(): String {
+    return "%.3f,%.3f,%.3f".format(x, y, z)
+}
+// #endregion
+
 private const val TAG = "ObjectInteractionAction"
+private const val RUBBER_DUCK_ANIMATION_DURATION_MS = 1500L
+private const val PUT_DOWN_FORWARD_DISTANCE = 0.58f
+private const val PUT_DOWN_VERTICAL_OFFSET = -0.24f

@@ -21,21 +21,27 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.example.matefairy01.animation.AnimationConfig
 import com.example.matefairy01.behavior.FairyBehaviorComponent
 import com.example.matefairy01.behavior.FairyBehaviorSystem
 import com.example.matefairy01.behavior.BehaviorRuntimeDependencies
 import com.example.matefairy01.behavior.HMDTagComponent
-import com.example.matefairy01.config.AppConfigLoader
 import com.example.matefairy01.input.HandClapDetector
+import com.example.matefairy01.input.HandDoublePinchDetector
+import com.example.matefairy01.input.HandFairyTouchDetector
 import com.example.matefairy01.input.InputControllerManager
+import com.example.matefairy01.interaction.InteractionActionRuntimeDependencies
 import com.example.matefairy01.interaction.InteractionActionSystem
 import com.example.matefairy01.interaction.InteractionActorComponent
 import com.example.matefairy01.interaction.InteractionObjectComponent
 import com.example.matefairy01.interaction.PickedObjectFollowSystem
+import com.example.matefairy01.interaction.playObjectAnimationOnTarget
+import com.example.matefairy01.perception.RealWorldSemanticManager
+import com.example.matefairy01.perception.RealWorldSemanticRuntimeDependencies
 import com.example.matefairy01.perception.SpatialMeshManager
+import com.example.matefairy01.perception.SpatialMeshRuntimeDependencies
+import com.example.matefairy01.playerinteraction.PlayerFairyInteractionSystem
 import com.example.matefairy01.runtime.MateFairyRuntime
-import com.example.matefairy01.runtime.MateFairyRuntimeFactory
-import com.example.matefairy01.ui.DebugActionPanel
 import com.example.matefairy01.ui.FairyDialogueUI
 import com.example.matefairy01.ui.GameUIContainer
 import com.example.matefairy01.ui.SharedUIManager
@@ -46,6 +52,8 @@ import com.pico.spatial.core.ecs.PhysicsWorldComponent
 import com.pico.spatial.core.ecs.PhysicsForceComponent
 import com.pico.spatial.core.ecs.PhysicsVelocityComponent
 import com.pico.spatial.core.ecs.RigidBodyComponent
+import com.pico.spatial.core.ecs.HoverEffectComponent
+import com.pico.spatial.core.ecs.InteractableComponent
 import com.pico.spatial.core.ecs.simulation.RigidBodyMode
 import com.pico.spatial.core.ecs.CollisionComponent
 import com.pico.spatial.core.ecs.simulation.CollisionResponseMode
@@ -60,6 +68,7 @@ import com.pico.spatial.tracking.hmd.HMDPose
 import com.pico.spatial.tracking.hmd.HMDTrackingData
 import com.pico.spatial.tracking.hmd.HMDTrackingProvider
 import androidx.compose.ui.input.pointer.pointerInput
+import com.pico.spatial.ui.foundation.gesture.detectSpatialPointerEvent
 import com.pico.spatial.ui.foundation.gesture.detectSpatialTapGesture
 import com.pico.spatial.ui.foundation.gesture.TargetEntity
 import com.pico.spatial.ui.foundation.content.SpatialView
@@ -75,6 +84,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.example.matefairy01.memory.permanent.MdTemplates
+import kotlin.math.sqrt
 
 data class DialogueBubbleState(
     val text: String,
@@ -85,10 +95,12 @@ private class HomeStageRuntimeState {
     var loadedRobotModelEntity: Entity? = null
     var dialogueAttachmentEntity: Entity? = null
     var userInputAttachmentEntity: Entity? = null
-    var debugActionAttachmentEntity: Entity? = null
     var editorSceneEntity: Entity? = null
+    var fairyBodyEntity: Entity? by mutableStateOf(null)
     var footballEntity: Entity? by mutableStateOf(null)
     var basketballEntity: Entity? by mutableStateOf(null)
+    var rubberDuckEntity: Entity? by mutableStateOf(null)
+    var boomboxEntity: Entity? by mutableStateOf(null)
 }
 
 const val DEFAULT_TEST_DIALOGUE_TEXT = "你好！我是你的MateFairy。"
@@ -101,6 +113,7 @@ fun HomeStage() {
     val rootEntity = remember { Entity().apply { components.set(PhysicsWorldComponent(Vector3(0f, -9.81f, 0f))) } }
     val hmdEntity = remember { Entity().apply { components.set(HMDTagComponent()) } }
     val spatialMeshManager = remember { SpatialMeshManager(mainHandler) }
+    val realWorldSemanticManager = remember { RealWorldSemanticManager(mainHandler) }
 
     // 追踪数据提供者
     val hmdTrackingProvider = remember { HMDTrackingProvider() }
@@ -114,7 +127,6 @@ fun HomeStage() {
 
     // 输入提供者
     val context = LocalContext.current
-    val appConfig = remember(context) { AppConfigLoader.load(context) }
     val textInputProvider = SharedUIManager.textInputProvider
     val voiceInputProvider = SharedUIManager.voiceInputProvider
     // runtime 由 SpatialApplication 在 onCreate 阶段一次性装配；
@@ -138,10 +150,12 @@ fun HomeStage() {
 
     DisposableEffect(runtime) {
         BehaviorRuntimeDependencies.bindAvatarController(runtime.avatarController)
+        RealWorldSemanticRuntimeDependencies.bind(realWorldSemanticManager)
         onDispose {
             runtime.avatarController.cleanup()
             runtime.musicModule.destroy()
             BehaviorRuntimeDependencies.clear()
+            RealWorldSemanticRuntimeDependencies.clear()
         }
     }
 
@@ -205,6 +219,27 @@ fun HomeStage() {
         }
     }
 
+    val handDoublePinchDetector = remember(inputControllerManager) {
+        HandDoublePinchDetector {
+            inputControllerManager.requestTextInput()
+        }
+    }
+
+    val handFairyTouchDetector = remember(runtime, runtimeState) {
+        HandFairyTouchDetector(
+            fairyPositionProvider = {
+                runtimeState.fairyBodyEntity
+                    ?.components
+                    ?.get(TransformComponent::class.java)
+                    ?.position
+            },
+            onFairyTouched = {
+                val scheduled = runtime.playerFairyInteractionScheduler.touchFairy()
+                Log.i(HOME_STAGE_TAG, "Virtual hand touched fairy: scheduled=$scheduled")
+            }
+        )
+    }
+
     val controllerListener = remember {
         ControllerTrackingProvider.ControllerActionListener { action ->
             mainHandler.post {
@@ -219,13 +254,18 @@ fun HomeStage() {
         handTrackingProvider,
         inputControllerManager,
         handClapDetector,
-        spatialMeshManager
+        handDoublePinchDetector,
+        handFairyTouchDetector,
+        spatialMeshManager,
+        realWorldSemanticManager
     ) {
         hmdTrackingProvider.start()
         controllerTrackingProvider.addControllerActionListener(controllerListener)
         controllerTrackingProvider.start()
         handTrackingProvider.start()
+        SpatialMeshRuntimeDependencies.bind(spatialMeshManager)
         registerSystem<FairyBehaviorSystem>()
+        registerSystem<PlayerFairyInteractionSystem>()
         registerSystem<InteractionActionSystem>()
         registerSystem<PickedObjectFollowSystem>()
         registerSystem<ResourcePhysicsActivationSystem>()
@@ -233,6 +273,8 @@ fun HomeStage() {
         val handTrackingJob = scope.launch {
             handTrackingProvider.dataFlow.collect { trackingData ->
                 handClapDetector.processHandTrackingData(trackingData)
+                handDoublePinchDetector.processHandTrackingData(trackingData)
+                handFairyTouchDetector.processHandTrackingData(trackingData)
             }
         }
 
@@ -241,6 +283,7 @@ fun HomeStage() {
             unregisterSystem<ResourcePhysicsActivationSystem>()
             unregisterSystem<PickedObjectFollowSystem>()
             unregisterSystem<InteractionActionSystem>()
+            unregisterSystem<PlayerFairyInteractionSystem>()
             unregisterSystem<FairyBehaviorSystem>()
             hmdTrackingProvider.stop()
             controllerTrackingProvider.removeControllerActionListener(controllerListener)
@@ -248,6 +291,9 @@ fun HomeStage() {
             handTrackingProvider.stop()
             inputControllerManager.cleanup()
             handClapDetector.cleanup()
+            handDoublePinchDetector.cleanup()
+            SpatialMeshRuntimeDependencies.clear()
+            realWorldSemanticManager.dispose()
             spatialMeshManager.dispose()
         }
     }
@@ -261,7 +307,7 @@ fun HomeStage() {
                         context = context,
                         targetedToEntity = TargetEntity.any { entity -> entity == football }
                     ) {
-                        applyBallTapImpulse(football)
+                        applyBallTapImpulse(football, hmdEntity, rootEntity)
                     }
                 }
             }
@@ -272,7 +318,64 @@ fun HomeStage() {
                         context = context,
                         targetedToEntity = TargetEntity.any { entity -> entity == basketball }
                     ) {
-                        applyBallTapImpulse(basketball)
+                        applyBallTapImpulse(basketball, hmdEntity, rootEntity)
+                    }
+                }
+            }
+            .pointerInput(runtimeState.fairyBodyEntity) {
+                val fairy = runtimeState.fairyBodyEntity
+                if (fairy != null) {
+                    detectSpatialPointerEvent(
+                        context = context,
+                        targetedToEntity = TargetEntity.hit(fairy)
+                    ) { events ->
+                        events.forEach { event ->
+                            if (event.isUpEvent()) {
+                                val scheduled = runtime.playerFairyInteractionScheduler.pinchFairy()
+                                Log.i(HOME_STAGE_TAG, "Fairy pinch gesture: scheduled=$scheduled")
+                            }
+                        }
+                        events.isNotEmpty()
+                    }
+                }
+            }
+            .pointerInput(runtimeState.rubberDuckEntity) {
+                val duck = runtimeState.rubberDuckEntity
+                if (duck != null) {
+                    detectSpatialTapGesture(
+                        context = context,
+                        targetedToEntity = TargetEntity.hit(duck)
+                    ) {
+                        applyDuckTapInteraction(duck, runtime)
+                    }
+                }
+            }
+            .pointerInput(runtimeState.boomboxEntity) {
+                val boombox = runtimeState.boomboxEntity
+                if (boombox != null) {
+                    val downTimesByPointerId = mutableMapOf<Long, Long>()
+                    detectSpatialPointerEvent(
+                        context = context,
+                        targetedToEntity = TargetEntity.hit(boombox)
+                    ) { events ->
+                        events.forEach { event ->
+                            val pointerId = event.pointerId.value
+                            when {
+                                event.isDownEvent() -> {
+                                    downTimesByPointerId[pointerId] = event.uptimeMillis
+                                }
+                                event.isUpEvent() -> {
+                                    val downTime = downTimesByPointerId.remove(pointerId)
+                                        ?: event.uptimeMillis
+                                    val durationMs = event.uptimeMillis - downTime
+                                    applyBoomboxPinchInteraction(boombox, runtime, durationMs)
+                                }
+                                !event.pressed -> {
+                                    downTimesByPointerId.remove(pointerId)
+                                }
+                            }
+                        }
+                        events.isNotEmpty()
                     }
                 }
             },
@@ -309,21 +412,6 @@ fun HomeStage() {
                 }
             }
 
-            attachments.entity("debug_action_panel")?.let { debugEntity ->
-                if (runtimeState.debugActionAttachmentEntity != debugEntity) {
-                    runtimeState.debugActionAttachmentEntity = debugEntity
-                    if (debugEntity.components[TransformComponent::class.java] == null) {
-                        debugEntity.components[TransformComponent::class.java] = TransformComponent()
-                    }
-                    hmdEntity.addChild(debugEntity)
-                }
-
-                debugEntity.components[TransformComponent::class.java]?.apply {
-                    setPosition(Vector3(0.44f, -0.32f, -0.85f))
-                    setQuaternion(Quat.identity())
-                }
-            }
-
             // 更新 HMD 位置：先转换到 rootEntity 所在坐标系，再驱动其子节点 HUD
             hmdTrackingData.hmdPose.let { pose ->
                 val transformComponent = hmdEntity.components[TransformComponent::class.java]
@@ -356,13 +444,14 @@ fun HomeStage() {
             // 由于不能直接在 initial 闭包中构造包含 attachments 的 Entity
             // 且之前的直接获取机制会导致 null 的生命周期问题
             // 所以我们这里只加载基础包，完全依赖 update 闭包来实时扫描和挂载 Attachments
+            InteractionActionRuntimeDependencies.entityIndex.clear()
 
             val (bundle, glbRoot, staticAssetRoots) = coroutineScope {
                 val bundleDeferred = async(Dispatchers.IO) {
                     com.pico.spatial.core.ecs.resource.AssetBundle.load("asset://editor-asset.bundle")
                 }
                 val glbDeferred = async(Dispatchers.IO) {
-                    Entity.load("asset://pico_robot_animated.glb")
+                    Entity.load(AnimationConfig.fairyModelAssetUri)
                 }
                 val staticAssetDeferreds = STARTUP_STATIC_ASSETS.map { spec ->
                     async {
@@ -371,11 +460,12 @@ fun HomeStage() {
                 }
                 Triple(bundleDeferred.await(), glbDeferred.await(), staticAssetDeferreds.awaitAll())
             }
-            val model = Entity()
 
+            val model = Entity()
             // 加载 Editor 里排好的场景
             val sceneModel = Entity.loadSuspend(modelName = "MyScene", bundle = bundle)
             runtimeState.editorSceneEntity = sceneModel
+
             val editorOcclusionMaterial = runCatching {
                 bundle.loadMaterial(OCCLUSION_MATERIAL_PATH)
             }.onSuccess {
@@ -393,6 +483,7 @@ fun HomeStage() {
             runtimeState.footballEntity = football
             football?.let {
                 it.components.set(InteractionObjectComponent(objectId = "football", tags = setOf("sports", "physics")))
+                InteractionActionRuntimeDependencies.entityIndex.registerObject(it)
                 ResourcePhysicsConfigurator.configureFootball(it)
             }
 
@@ -400,6 +491,7 @@ fun HomeStage() {
             runtimeState.basketballEntity = basketball
             basketball?.let {
                 it.components.set(InteractionObjectComponent(objectId = "basketball", tags = setOf("sports", "physics")))
+                InteractionActionRuntimeDependencies.entityIndex.registerObject(it)
                 ResourcePhysicsConfigurator.configureBasketball(it)
             }
 
@@ -428,18 +520,18 @@ fun HomeStage() {
                 val robotModel = Entity()
                 runtimeState.loadedRobotModelEntity = robotModel
 
-                // 物理化配置：刚体 + 碰撞体 + 力组件
-                val fairyShape = ShapeResource.createCapsule(0.35f, 0.1f)
+                // 精灵自身由行为系统按 velocity * dt 直接驱动；保留碰撞体只用于命中/交互。
+                val fairyShape = ShapeResource.createCapsule(0.18f, 0.12f)
                 val collision = CollisionComponent(
                     collisionShape = listOf(fairyShape),
                     physicsMaterial = PhysicsMaterialResource(),
-                    collisionResponseMode = CollisionResponseMode.COLLIDER_FULL
+                    collisionResponseMode = CollisionResponseMode.TRIGGER_LITE
                 )
                 val rigidBody = RigidBodyComponent().apply {
-                    rigidBodyMode = RigidBodyMode.DYNAMIC
-                    isAffectedByGravity = false // 手动射线悬浮
+                    rigidBodyMode = RigidBodyMode.KINEMATIC
+                    isAffectedByGravity = false
                     isRotationLocked = Bool3(true, true, true) // 锁定物理旋转，通过脚本手动旋转
-                    linearDamping = 5.0f // 增加线性阻尼，避免过度震荡
+                    linearDamping = 5.0f
                     angularDamping = 5.0f
                 }
                 val physicsForce = PhysicsForceComponent()
@@ -447,6 +539,8 @@ fun HomeStage() {
                 robotBody.components.set(collision)
                 robotBody.components.set(rigidBody)
                 robotBody.components.set(physicsForce)
+                robotBody.components.set(InteractableComponent())
+                robotBody.components.set(HoverEffectComponent())
 
                 // 将已缩放的 GLB 挂载到 Wrapper
                 robotModel.addChild(glbRoot)
@@ -489,6 +583,8 @@ fun HomeStage() {
 
                     components.set(behaviorComponent)
                     components.set(InteractionActorComponent())
+                    InteractionActionRuntimeDependencies.entityIndex.registerActor(this)
+                    runtimeState.fairyBodyEntity = this
                 }
 
                 // 初始化动画模块（传入 GLB 根节点，以便查找 SkinnedMeshEntity）
@@ -509,6 +605,10 @@ fun HomeStage() {
                 val startupAsset = createStartupStaticAsset(spec, assetRoot)
                 rootEntity.addChild(startupAsset)
                 Log.i(HOME_STAGE_TAG, "Loaded startup static asset: ${spec.assetUri}")
+                when (spec.objectId) {
+                    "rubber_duck_toy" -> runtimeState.rubberDuckEntity = startupAsset
+                    "boombox" -> runtimeState.boomboxEntity = startupAsset
+                }
             }
 
             // 设置对话文本附件位置（精灵头顶）
@@ -519,7 +619,8 @@ fun HomeStage() {
 
             rootEntity.addChild(hmdEntity)
             spatialMeshManager.start(rootEntity)
-            
+            realWorldSemanticManager.start(rootEntity)
+
             // 释放 bundle
             bundle.close()
         },
@@ -548,21 +649,75 @@ fun HomeStage() {
                 }
             }
 
-            AttachmentPanel(id = "debug_action_panel") {
-                DebugActionPanel()
-            }
         }
     )
 }
 
-private fun applyBallTapImpulse(ball: Entity) {
+private fun applyBallTapImpulse(ball: Entity, hmdEntity: Entity, rootEntity: Entity) {
+    val forward = playerForwardHorizontalDirection(hmdEntity, rootEntity)
     val velocityComp = ball.components[PhysicsVelocityComponent::class.java]
         ?: PhysicsVelocityComponent().also { ball.components.set(it) }
-    velocityComp.linearVelocity = Vector3(0f, 3.0f, -3.0f)
+    velocityComp.linearVelocity = Vector3(
+        forward.x * BALL_TAP_FORWARD_SPEED,
+        BALL_TAP_UPWARD_SPEED,
+        forward.z * BALL_TAP_FORWARD_SPEED
+    )
+}
+
+private fun playerForwardHorizontalDirection(hmdEntity: Entity, rootEntity: Entity): Vector3 {
+    val origin = hmdEntity.convertPositionTo(Vector3.ZERO, rootEntity)
+    val forwardPoint = hmdEntity.convertPositionTo(HMD_LOCAL_FORWARD_POINT, rootEntity)
+    return horizontalDirection(origin, forwardPoint) ?: DEFAULT_BALL_TAP_FORWARD
+}
+
+private fun horizontalDirection(from: Vector3, to: Vector3): Vector3? {
+    val x = to.x - from.x
+    val z = to.z - from.z
+    val length = sqrt(x * x + z * z)
+    if (length <= MIN_HORIZONTAL_DIRECTION_LENGTH) return null
+    return Vector3(x / length, 0f, z / length)
+}
+
+private fun applyDuckTapInteraction(duck: Entity, runtime: MateFairyRuntime) {
+    val animationStarted = playObjectAnimationOnTarget(
+        duck,
+        maxDurationMs = RUBBER_DUCK_ANIMATION_DURATION_MS
+    )
+    val sfxName = runtime.musicModule.playRandomRubberDuckSfxAt(duck)
+    Log.i(
+        HOME_STAGE_TAG,
+        "Rubber duck pinch: animationStarted=$animationStarted, sfx=$sfxName"
+    )
+}
+
+private fun applyBoomboxPinchInteraction(
+    boombox: Entity,
+    runtime: MateFairyRuntime,
+    durationMs: Long
+) {
+    if (durationMs >= BOOMBOX_LONG_PINCH_THRESHOLD_MS) {
+        if (runtime.musicModule.isSpatialMusicPlaying()) {
+            runtime.musicModule.stopSpatialMusic()
+            Log.i(HOME_STAGE_TAG, "Boombox long pinch: stop spatial music")
+        } else {
+            runtime.musicModule.playNextSpatialMusicAt(boombox)
+            Log.i(HOME_STAGE_TAG, "Boombox long pinch: start spatial music")
+        }
+    } else {
+        runtime.musicModule.playNextSpatialMusicAt(boombox)
+        Log.i(HOME_STAGE_TAG, "Boombox short pinch: switch spatial music")
+    }
 }
 
 private const val OCCLUSION_MATERIAL_PATH = "MyScene/Root/MyMaterials/OcclusionMaterial"
 private const val HOME_STAGE_TAG = "HomeStage"
+private const val RUBBER_DUCK_ANIMATION_DURATION_MS = 1500L
+private const val BOOMBOX_LONG_PINCH_THRESHOLD_MS = 1000L
+private const val BALL_TAP_FORWARD_SPEED = 3.0f
+private const val BALL_TAP_UPWARD_SPEED = 3.0f
+private const val MIN_HORIZONTAL_DIRECTION_LENGTH = 0.001f
+private val HMD_LOCAL_FORWARD_POINT = Vector3(0f, 0f, -1f)
+private val DEFAULT_BALL_TAP_FORWARD = Vector3(0f, 0f, -1f)
 
 private data class StartupStaticAssetSpec(
     val assetUri: String,
@@ -604,6 +759,7 @@ private fun createStartupStaticAsset(spec: StartupStaticAssetSpec, assetRoot: En
                 tags = setOf("startup_asset", "physics")
             )
         )
+        InteractionActionRuntimeDependencies.entityIndex.registerObject(this)
         spec.configurePhysics(this)
 
         val visualEntity = Entity().apply {

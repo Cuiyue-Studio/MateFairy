@@ -4,7 +4,9 @@ import com.example.matefairy01.interaction.PlayFootballActionController
 import com.example.matefairy01.interaction.PutDownRubberDuckActionController
 import com.example.matefairy01.interaction.SqueezeRubberDuckActionController
 import com.example.matefairy01.interaction.StartBoomboxActionController
+import com.example.matefairy01.interaction.StayOnChairActionController
 import com.example.matefairy01.interaction.StopBoomboxActionController
+import com.example.matefairy01.interaction.LeaveChairActionController
 
 /**
  * 默认的行为决策器实现
@@ -23,7 +25,9 @@ class DefaultBehaviorDecisionMaker : BehaviorDecisionMaker {
         StartBoomboxActionController.ACTION_ID,
         StopBoomboxActionController.ACTION_ID,
         SqueezeRubberDuckActionController.ACTION_ID,
-        PutDownRubberDuckActionController.ACTION_ID
+        PutDownRubberDuckActionController.ACTION_ID,
+        StayOnChairActionController.ACTION_ID,
+        LeaveChairActionController.ACTION_ID
     )
 
     override fun decide(

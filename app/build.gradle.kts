@@ -42,7 +42,7 @@ android {
     androidResources {
         // 注意：onnx/json 加进白名单是为后续接入 ONNX Runtime + tokenizer 准备
         // 如果被压缩，模型无法 mmap 加载，体积虚胖且推理变慢，且不会报错最难排查
-        noCompress += listOf("bundle", "glb", "usdz", "wav", "onnx", "json")
+        noCompress += listOf("bundle", "glb", "usdz", "wav", "mp3", "onnx", "json")
     }
     testOptions {
         unitTests {

@@ -9,6 +9,7 @@ import com.example.matefairy01.memory.DreamConfig
 import com.example.matefairy01.memory.ingestion.IngestionJob
 import com.example.matefairy01.memory.ingestion.IngestionWorker
 import com.example.matefairy01.memory.permanent.DreamJob
+import com.example.matefairy01.orchestrator.decision.ActionIntentFallbackResolver
 import com.example.matefairy01.orchestrator.decision.BehaviorDecisionMaker
 import com.example.matefairy01.orchestrator.decision.DefaultBehaviorDecisionMaker
 import com.example.matefairy01.orchestrator.ports.ActionCommandPort
@@ -17,7 +18,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -66,7 +66,20 @@ class ConversationOrchestrator(
 
         // 改造点：注入 SOUL/USER/recall 到 prompt
         val messages = contextMemorySystem.buildPromptMessages(query = text)
-        val response = llmProvider.chat(messages)
+        val rawResponse = llmProvider.chat(messages)
+        val actionIntentResolution = ActionIntentFallbackResolver.resolve(
+            userText = text,
+            replyText = rawResponse.reply_text,
+            modelActionIntent = rawResponse.action_intent
+        )
+        if (actionIntentResolution.corrected) {
+            Log.i(
+                TAG,
+                "Corrected action_intent: model=${rawResponse.action_intent}, " +
+                    "resolved=${actionIntentResolution.actionIntent}, reason=${actionIntentResolution.reason}"
+            )
+        }
+        val response = rawResponse.copy(action_intent = actionIntentResolution.actionIntent)
 
         contextMemorySystem.addMessage(
             ChatMessage(role = "assistant", content = response.reply_text)

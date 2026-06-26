@@ -1,5 +1,6 @@
 package com.example.matefairy01.avatar
 
+import com.example.matefairy01.animation.AnimationFacingPolicy
 import com.example.matefairy01.animation.FairyAnimation
 import com.pico.spatial.core.ecs.Entity
 
@@ -10,6 +11,8 @@ import com.pico.spatial.core.ecs.Entity
  * 后续可继续扩展为动作、表情、状态仲裁的统一入口。
  */
 interface AvatarController {
+    val currentFacingPolicy: AnimationFacingPolicy
+
     fun initialize(robotEntity: Entity)
 
     fun playSpawnAnimation()
@@ -17,6 +20,8 @@ interface AvatarController {
     fun requestMovingAnimation()
 
     fun requestIdleAnimation(): FairyAnimation?
+
+    fun requestStandbyAnimation(): FairyAnimation?
 
     fun cleanup()
 }

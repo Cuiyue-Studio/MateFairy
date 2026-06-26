@@ -204,15 +204,21 @@ object AppConfigLoader {
             val item = json.optJSONObject(name) ?: continue
             val url = item.optString("url").trim()
             if (url.isEmpty()) continue
+            if (!item.optBoolean("enabled", true)) continue
 
             val toolsArr = item.optJSONArray("enabledTools")
             val enabledTools = if (toolsArr == null) listOf("*") else toolsArr.toStringList()
+            val headers = parseStringMap(item.optJSONObject("headers"))
+            if (containsPlaceholder(url) || headers.values.any(::containsPlaceholder)) {
+                continue
+            }
 
             result += McpServerConfig(
                 name = name,
                 type = McpTransportType.fromRaw(item.optString("type")),
                 url = url,
-                headers = parseStringMap(item.optJSONObject("headers")),
+                headers = headers,
+                enabled = item.optBoolean("enabled", true),
                 connectTimeoutMs = item.optLong("connectTimeoutMs", 10_000L),
                 readTimeoutMs = item.optLong("readTimeoutMs", 60_000L),
                 toolTimeoutMs = item.optLong("toolTimeoutMs", 30_000L),
@@ -220,6 +226,12 @@ object AppConfigLoader {
             )
         }
         return result
+    }
+
+    private fun containsPlaceholder(value: String): Boolean {
+        return value.contains("PLEASE_REPLACE", ignoreCase = true) ||
+            value.contains("YOUR_", ignoreCase = true) ||
+            value.contains("<", ignoreCase = true)
     }
 
     private fun parseStringMap(json: JSONObject?): Map<String, String> {

@@ -16,6 +16,17 @@
     }
   },
   "mcpServers": {
+    "websearch": {
+      "type": "streamableHttp",
+      "url": "http://10.0.2.2:3000/mcp",
+      "headers": {
+        "X-API-Key": "PLEASE_REPLACE_SEARCH_API_KEY"
+      },
+      "connectTimeoutMs": 10000,
+      "readTimeoutMs": 60000,
+      "toolTimeoutMs": 30000,
+      "enabledTools": ["web_search", "ai_search", "web_scrape"]
+    },
     "deepwiki": {
       "type": "streamableHttp",
       "url": "https://mcp.deepwiki.com/mcp",

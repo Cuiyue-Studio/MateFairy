@@ -41,6 +41,7 @@ class MusicModule(private val context: Context) {
         private const val AUTO_ADVANCE_RETRY_MS = 500L
         private const val DEFAULT_SPATIAL_MUSIC_VOLUME = 0.18f
         private const val OBJECT_AUDIO_SOURCE_VOLUME = 0.85f
+        private const val RUBBER_DUCK_SFX_DURATION_MS = 1500L
     }
 
     fun setSpatialMusicPlaylist(fileNames: List<String>) {
@@ -89,13 +90,27 @@ class MusicModule(private val context: Context) {
         stopBgm()
     }
 
+    fun isSpatialMusicPlaying(): Boolean {
+        return spatialMusicPlayer?.isPlaying() == true
+    }
+
     fun playRandomRubberDuckSfxAt(entity: Entity, volume: Float = 1.0f): String? {
         if (rubberDuckSfxList.isEmpty()) {
             Log.w(TAG, "Rubber duck SFX list is empty; skip squeak playback")
             return null
         }
         val fileName = rubberDuckSfxList.random(Random.Default)
-        playSpatialSfxAt(entity, fileName, volume)
+        val player = playSpatialSfxAt(entity, fileName, volume)
+        player?.let { p ->
+            mainHandler.postDelayed(
+                {
+                    if (p.isPlaying()) {
+                        p.stop()
+                    }
+                },
+                RUBBER_DUCK_SFX_DURATION_MS
+            )
+        }
         return fileName
     }
 
@@ -116,7 +131,7 @@ class MusicModule(private val context: Context) {
         }.getOrDefault(false)
     }
 
-    private fun playSpatialSfxAt(entity: Entity, fileName: String, volume: Float) {
+    private fun playSpatialSfxAt(entity: Entity, fileName: String, volume: Float): AudioPlayerController? {
         spatialSfxPlayer?.let {
             if (it.isPlaying()) it.stop()
             it.close()
@@ -132,6 +147,7 @@ class MusicModule(private val context: Context) {
         }.onFailure {
             Log.e(TAG, "Failed to play spatial SFX: $fileName", it)
         }
+        return spatialSfxPlayer
     }
 
     private fun ensureObjectAudio(entity: Entity) {

@@ -13,6 +13,7 @@ import com.example.matefairy01.memory.retrieval.MemoryRetriever
 import com.example.matefairy01.memory.semantic.SemanticStore
 import com.example.matefairy01.ml.IEmbedder
 import com.example.matefairy01.orchestrator.ConversationOrchestrator
+import com.example.matefairy01.playerinteraction.PlayerFairyInteractionScheduler
 
 /**
  * 应用核心运行时容器，由 [MateFairyRuntimeFactory] 一次性装配，
@@ -22,6 +23,7 @@ data class MateFairyRuntime(
     val conversationOrchestrator: ConversationOrchestrator,
     val avatarController: AvatarController,
     val animationModule: AnimationModule,
+    val playerFairyInteractionScheduler: PlayerFairyInteractionScheduler,
     val mcpManager: McpManager,
     val embedder: IEmbedder,
     val database: MateFairyDatabase,

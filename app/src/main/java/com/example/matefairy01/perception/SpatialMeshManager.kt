@@ -18,14 +18,48 @@ import com.pico.spatial.sense.mesh.MeshAnchor
 import com.pico.spatial.sense.mesh.MeshTrackingManager
 import java.util.UUID
 
-class SpatialMeshManager(private val mainHandler: Handler) {
+interface SpatialMeshQuery {
+    fun getMeshEntity(anchorUUID: UUID): Entity?
+
+    fun getAnchorUUID(entity: Entity): UUID?
+}
+
+object EmptySpatialMeshQuery : SpatialMeshQuery {
+    override fun getMeshEntity(anchorUUID: UUID): Entity? = null
+
+    override fun getAnchorUUID(entity: Entity): UUID? = null
+}
+
+object SpatialMeshRuntimeDependencies {
+    var query: SpatialMeshQuery = EmptySpatialMeshQuery
+        private set
+
+    fun bind(query: SpatialMeshQuery) {
+        this.query = query
+    }
+
+    fun clear() {
+        query = EmptySpatialMeshQuery
+    }
+}
+
+class SpatialMeshManager(private val mainHandler: Handler) : SpatialMeshQuery {
     private var parentEntity: Entity? = null
     private var subscription: Cancellable? = null
     private var occlusionMaterial: Material? = null
     private val meshEntities = mutableMapOf<UUID, Entity>()
+    private val anchorUUIDByEntity = mutableMapOf<Entity, UUID>()
 
     fun setOcclusionMaterial(material: Material?) {
         occlusionMaterial = material
+    }
+
+    override fun getMeshEntity(anchorUUID: UUID): Entity? {
+        return meshEntities[anchorUUID]
+    }
+
+    override fun getAnchorUUID(entity: Entity): UUID? {
+        return anchorUUIDByEntity[entity]
     }
 
     fun start(parentEntity: Entity) {
@@ -66,7 +100,10 @@ class SpatialMeshManager(private val mainHandler: Handler) {
     private fun upsertMeshEntity(anchor: MeshAnchor) {
         val parent = parentEntity ?: return
         val existing = meshEntities.remove(anchor.anchorUUID)
-        existing?.destroy()
+        existing?.let { entity ->
+            anchorUUIDByEntity.remove(entity)
+            entity.destroy()
+        }
 
         runCatching {
             val mesh = MeshResource.loadFromMeshAnchor(anchor.anchorUUID)
@@ -79,7 +116,11 @@ class SpatialMeshManager(private val mainHandler: Handler) {
                 components.set(
                     CollisionComponent(
                         collisionShape = listOf(shape),
-                        physicsMaterial = PhysicsMaterialResource(),
+                        physicsMaterial = PhysicsMaterialResource(
+                            staticFriction = 0.65f,
+                            dynamicFriction = 0.55f,
+                            restitution = 0.75f
+                        ),
                         collisionResponseMode = CollisionResponseMode.COLLIDER_FULL,
                         collisionFilter = CollisionFilter.COLLISION_FILTER_DEFAULT,
                         collisionInfoDetailLevel = CollisionInfoDetailLevel.BRIEF
@@ -89,18 +130,23 @@ class SpatialMeshManager(private val mainHandler: Handler) {
         }.onSuccess { entity ->
             parent.addChild(entity)
             meshEntities[anchor.anchorUUID] = entity
+            anchorUUIDByEntity[entity] = anchor.anchorUUID
         }.onFailure {
             Log.w(TAG, "Failed to upsert mesh anchor ${anchor.anchorUUID}", it)
         }
     }
 
     private fun removeMeshEntity(anchorUUID: UUID) {
-        meshEntities.remove(anchorUUID)?.destroy()
+        meshEntities.remove(anchorUUID)?.let { entity ->
+            anchorUUIDByEntity.remove(entity)
+            entity.destroy()
+        }
     }
 
     private fun clearMeshEntities() {
         meshEntities.values.forEach { it.destroy() }
         meshEntities.clear()
+        anchorUUIDByEntity.clear()
     }
 
     private companion object {

@@ -1,7 +1,10 @@
 package com.example.matefairy01.behavior
 
+import com.example.matefairy01.animation.AnimationFacingPolicy
+import com.example.matefairy01.avatar.AvatarController
 import com.example.matefairy01.content.ResourcePhysicsActivationComponent
 import com.pico.spatial.core.ecs.System
+import com.pico.spatial.core.ecs.Scene
 import com.pico.spatial.core.ecs.SceneUpdateContext
 import com.pico.spatial.core.ecs.EntityQueryCondition
 import com.pico.spatial.core.ecs.Entity
@@ -9,12 +12,16 @@ import com.pico.spatial.core.ecs.TransformComponent
 import com.pico.spatial.core.ecs.PhysicsForceComponent
 import com.pico.spatial.core.ecs.PhysicsVelocityComponent
 import com.pico.spatial.core.ecs.RigidBodyComponent
+import com.pico.spatial.core.ecs.CollisionComponent
+import com.pico.spatial.core.ecs.resource.ShapeResource
 import com.pico.spatial.core.ecs.simulation.CollisionCastHitMode
 import com.pico.spatial.core.ecs.simulation.CollisionGroup
+import com.pico.spatial.core.ecs.simulation.CollisionResponseMode
 import com.pico.spatial.core.ecs.simulation.RigidBodyMode
+import com.pico.spatial.core.math.Quat
 import com.pico.spatial.core.math.Vector3
 import com.pico.spatial.core.math.EulerAngles
-import com.example.matefairy01.interaction.DEFAULT_FAIRY_ACTOR_ID
+import com.example.matefairy01.interaction.ActionRecoveryGraceComponent
 import com.example.matefairy01.interaction.FairyActionLockComponent
 import com.example.matefairy01.interaction.InteractionActorComponent
 import com.example.matefairy01.interaction.InteractionActionRequest
@@ -24,9 +31,12 @@ import com.example.matefairy01.interaction.InteractionEntityResolver
 import com.example.matefairy01.interaction.PickedObjectFollowComponent
 import com.example.matefairy01.interaction.PlayFootballActionController
 import com.example.matefairy01.interaction.PlayFootballPreconditions
+import com.example.matefairy01.perception.SpatialMeshRuntimeDependencies
+import com.example.matefairy01.playerinteraction.PlayerFairyInteractionComponent
 import kotlin.math.atan2
 import kotlin.math.sqrt
 import kotlin.math.sin
+import kotlin.math.cos
 import kotlin.math.abs
 import kotlin.random.Random
 
@@ -40,6 +50,11 @@ class FairyBehaviorSystem : System() {
     private var cachedHmdEntity: Entity? = null
     private var cachedFairyEntities: List<Entity> = emptyList()
     private var wasFollowEnabled: Boolean = true
+    private var spatialMeshCastShape: ShapeResource? = null
+    // #region debug-point DBG:boombox-drop-watch-state
+    private val debugWatchRemainingSeconds = mutableMapOf<Int, Float>()
+    private val debugWatchSampleCooldownSeconds = mutableMapOf<Int, Float>()
+    // #endregion
 
     override fun update(context: SceneUpdateContext) {
         val dt = context.deltaTime
@@ -62,21 +77,76 @@ class FairyBehaviorSystem : System() {
             val visualTransform =
                 behavior.visualEntity?.components?.get(TransformComponent::class.java) ?: transform
 
+            val animationFacingPolicy = avatarController.facingPolicy()
+
+            if (handleActionRecoveryGrace(fairyEntity, behavior, transform, visualTransform, hmdPos, avatarController, dt)) {
+                continue
+            }
+
             if (
+                fairyEntity.components[PlayerFairyInteractionComponent::class.java] != null ||
                 fairyEntity.components[FairyActionLockComponent::class.java] != null ||
                 !followEnabled
             ) {
+                prepareScriptDrivenFairy(fairyEntity)
                 visualTransform.position = transform.position
-                visualTransform.eulerAngles = transform.eulerAngles
+                if (animationFacingPolicy == AnimationFacingPolicy.FACE_PLAYER) {
+                    faceTargetPosition(
+                        behavior = behavior,
+                        from = transform.position,
+                        target = hmdPos,
+                        turnSpeed = ANIMATION_FACE_PLAYER_TURN_SPEED,
+                        dt = dt
+                    )
+                    applyFairyYaw(transform, visualTransform, behavior)
+                } else {
+                    behavior.currentYaw = transform.eulerAngles.yaw
+                    visualTransform.eulerAngles = transform.eulerAngles
+                }
                 behavior.lastPosition = transform.position
                 behavior.hasRecordedLastPosition = true
+                continue
+            }
+
+            val semanticResidence = fairyEntity.components[FairySemanticResidenceComponent::class.java]
+            if (semanticResidence != null) {
+                applySemanticResidenceIdle(
+                    fairyEntity = fairyEntity,
+                    residence = semanticResidence,
+                    behavior = behavior,
+                    transform = transform,
+                    visualTransform = visualTransform,
+                    hmdPos = hmdPos,
+                    animationFacingPolicy = animationFacingPolicy,
+                    avatarController = avatarController,
+                    dt = dt
+                )
                 continue
             }
 
             val fairyPos = transform.position
             updatePlayFootballDistance(context, fairyPos)
             if (followJustRestored) {
-                reconcileAfterAction(behavior, fairyPos, hmdPos, avatarController)
+                if (isCarryingObject(context, fairyEntity)) {
+                    resumeCarryingObjectAfterAction(
+                        fairyEntity = fairyEntity,
+                        behavior = behavior,
+                        transform = transform,
+                        visualTransform = visualTransform,
+                        hmdEntity = hmdEntity,
+                        hmdPos = hmdPos,
+                        avatarController = avatarController
+                    )
+                    continue
+                }
+                resetBehaviorStateAfterAction(
+                    fairyEntity = fairyEntity,
+                    behavior = behavior,
+                    transform = transform,
+                    visualTransform = visualTransform,
+                    avatarController = avatarController
+                )
+                continue
             }
 
             // Calculate 3D distance
@@ -90,15 +160,6 @@ class FairyBehaviorSystem : System() {
                 behavior.lastPosition = fairyPos
                 behavior.hasRecordedLastPosition = true
             }
-
-            // Calculate actual velocity based on position delta
-            val safeDt = dt.coerceAtLeast(0.001f)
-            val actualVelocity = Vector3(
-                (fairyPos.x - behavior.lastPosition.x) / safeDt,
-                (fairyPos.y - behavior.lastPosition.y) / safeDt,
-                (fairyPos.z - behavior.lastPosition.z) / safeDt
-            )
-            behavior.lastPosition = fairyPos
 
             // State machine update
             when (behavior.state) {
@@ -119,7 +180,7 @@ class FairyBehaviorSystem : System() {
                     if (distance2D > behavior.outerRadius) {
                         behavior.state = FairyState.FOLLOWING
                         behavior.waitTimer = 0f
-                        behavior.currentTarget = getRandomTargetInInnerRadius(hmdPos, behavior.innerRadius, behavior.hoverHeight, behavior.zDeviationRange)
+                        behavior.currentTarget = getFollowViewCenterTarget(hmdEntity, fairyEntity, behavior)
                         avatarController?.requestMovingAnimation()
                     } else {
                         if (behavior.currentTarget == null || hasReachedTarget(fairyPos, behavior.currentTarget!!)) {
@@ -142,6 +203,17 @@ class FairyBehaviorSystem : System() {
                         behavior.waitTimer = 0f
                         behavior.isWaitingForAnimation = false
                         behavior.currentTarget = getRandomTargetInInnerRadius(hmdPos, behavior.innerRadius, behavior.hoverHeight, behavior.zDeviationRange)
+                        // #region debug-point C:post-reset-target-from-waiting
+                        debugPostActionWatchEvent(
+                            fairyEntity = fairyEntity,
+                            behavior = behavior,
+                            transform = transform,
+                            visualTransform = visualTransform,
+                            hmdPos = hmdPos,
+                            hypothesisId = "C",
+                            message = "[DEBUG] post-reset wait expired and assigned random target"
+                        )
+                        // #endregion
                         avatarController?.requestMovingAnimation()
                     }
 
@@ -149,15 +221,27 @@ class FairyBehaviorSystem : System() {
                         behavior.state = FairyState.FOLLOWING
                         behavior.waitTimer = 0f
                         behavior.isWaitingForAnimation = false
-                        behavior.currentTarget = getRandomTargetInInnerRadius(hmdPos, behavior.innerRadius, behavior.hoverHeight, behavior.zDeviationRange)
+                        behavior.currentTarget = getFollowViewCenterTarget(hmdEntity, fairyEntity, behavior)
+                        // #region debug-point C:post-reset-follow-from-waiting
+                        debugPostActionWatchEvent(
+                            fairyEntity = fairyEntity,
+                            behavior = behavior,
+                            transform = transform,
+                            visualTransform = visualTransform,
+                            hmdPos = hmdPos,
+                            hypothesisId = "C",
+                            message = "[DEBUG] post-reset waiting switched to following"
+                        )
+                        // #endregion
                         avatarController?.requestMovingAnimation()
                     }
                 }
 
                 FairyState.FOLLOWING -> {
-                    behavior.currentTarget = getRandomTargetInInnerRadius(hmdPos, behavior.innerRadius, behavior.hoverHeight, behavior.zDeviationRange)
+                    val followTarget = getFollowViewCenterTarget(hmdEntity, fairyEntity, behavior)
+                    behavior.currentTarget = followTarget
 
-                    if (distance2D <= behavior.innerRadius) {
+                    if (hasReachedTarget(fairyPos, followTarget)) {
                         behavior.state = FairyState.FOLLOW_HOVERING
                         behavior.waitTimer = 0f
                         behavior.baseY = transform.position.y
@@ -167,159 +251,294 @@ class FairyBehaviorSystem : System() {
                 }
             }
 
-            // Movement and physics logic
-            var totalForce = Vector3(0f, 0f, 0f)
-            val baseStiffness = 30.0f
-
-            when (behavior.state) {
-                FairyState.RANDOM_MOVING, FairyState.FOLLOWING -> {
-                    val targetPos = behavior.currentTarget
-                    if (targetPos != null) {
-                        val targetSpeed = if (behavior.state == FairyState.FOLLOWING) behavior.followSpeed else behavior.speed
-
-                        val dirX = targetPos.x - fairyPos.x
-                        val dirY = targetPos.y - fairyPos.y
-                        val dirZ = targetPos.z - fairyPos.z
-                        val dist = sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ)
-
-                        if (dist > 0.05f) {
-                            // Compute desired velocity towards target
-                            val desiredVx = (dirX / dist) * targetSpeed
-                            val desiredVy = (dirY / dist) * targetSpeed
-                            val desiredVz = (dirZ / dist) * targetSpeed
-
-                            // PD control for velocity
-                            val pGain = 15.0f
-                            totalForce = Vector3(
-                                (desiredVx - actualVelocity.x) * pGain,
-                                (desiredVy - actualVelocity.y) * pGain,
-                                (desiredVz - actualVelocity.z) * pGain
-                            )
-
-                            // Use intended travel direction for heading; physics jitter must not drive yaw.
-                            if (dirX != 0f || dirZ != 0f) {
-                                val targetYaw = atan2(dirX, dirZ).toDegrees()
-                                behavior.currentYaw = lerpAngle(behavior.currentYaw, targetYaw, 5.0f * dt)
-                            }
-                        }
-                    }
-                }
-
-                FairyState.RANDOM_WAITING, FairyState.FOLLOW_HOVERING -> {
-                    // Floating effect
-                    behavior.floatTime += dt
-                    val floatOffset = behavior.floatAmplitude * sin(behavior.floatTime * behavior.floatSpeed) *
-                                     abs(sin(behavior.floatTime * behavior.floatSpeed * 0.7f))
-
-                    // Use a spring force to keep it at baseY + floatOffset
-                    val targetY = behavior.baseY + floatOffset
-                    val errorY = targetY - fairyPos.y
-
-                    // Spring force: F = k * x - d * v
-                    val k = baseStiffness
-                    val d = 10.0f
-                    totalForce = Vector3(
-                        -actualVelocity.x * d, // damping X
-                        (errorY * k) - (actualVelocity.y * d), // spring Y
-                        -actualVelocity.z * d  // damping Z
-                    )
-
-                    if (behavior.state == FairyState.FOLLOW_HOVERING) {
-                        // Face the player
-                        val faceDirX = hmdPos.x - fairyPos.x
-                        val faceDirZ = hmdPos.z - fairyPos.z
-                        if (faceDirX != 0f || faceDirZ != 0f) {
-                            val targetYaw = atan2(faceDirX, faceDirZ).toDegrees()
-                            behavior.currentYaw = lerpAngle(behavior.currentYaw, targetYaw, 3.0f * dt)
-                        }
-                    }
-                }
-            }
-
-            // ----------------------------------------------------
-            // Raycast Hovering & Obstacle Avoidance
-            // ----------------------------------------------------
-
-            // Raycast Down to avoid floor jitter (suspension spring)
-            val raycastDown = context.scene.rayCast(
-                origin = fairyPos,
-                direction = Vector3(0f, -1f, 0f),
-                length = 0.6f,
-                hitMode = CollisionCastHitMode.NEAREST,
-                group = CollisionGroup(CollisionGroup.COLLISION_GROUP_ALL)
-            )
-
-            val floorHit = raycastDown.results.firstOrNull { it.entity != fairyEntity }
-            if (floorHit != null) {
-                val hit = floorHit
-                val floorDist = hit.distance
-                // If the floor is too close (< 0.4m), apply strong upward suspension force
-                val minHoverHeight = 0.4f
-                if (floorDist < minHoverHeight && floorDist > 0f) {
-                    val pushUpError = minHoverHeight - floorDist
-                    // Add extra upward force to prevent hitting the floor
-                    val suspensionForce = pushUpError * 100.0f
-                    totalForce = Vector3(totalForce.x, totalForce.y + suspensionForce, totalForce.z)
-                }
-            }
-
             val isCarryingObject = isCarryingObject(context, fairyEntity)
             if (isCarryingObject) {
+                ensureCarryingMovementTarget(
+                    behavior = behavior,
+                    fairyEntity = fairyEntity,
+                    hmdEntity = hmdEntity,
+                    transform = transform,
+                    hmdPos = hmdPos
+                )
                 applyCarryingDirectMotion(
+                    scene = context.scene,
                     fairyEntity = fairyEntity,
                     behavior = behavior,
                     transform = transform,
-                    physicsForce = physicsForce,
+                    hmdPos = hmdPos,
+                    animationFacingPolicy = animationFacingPolicy,
                     dt = dt
                 )
                 visualTransform.position = transform.position
-                val pitch = if (behavior.hasRecordedInitialRotation) behavior.initialPitch else 0f
-                val roll = if (behavior.hasRecordedInitialRotation) behavior.initialRoll else 0f
-                visualTransform.eulerAngles = EulerAngles(pitch = pitch, yaw = behavior.currentYaw, roll = roll)
+                applyFairyYaw(transform, visualTransform, behavior)
                 behavior.lastPosition = transform.position
                 behavior.hasRecordedLastPosition = true
                 continue
             }
-            restoreNormalFairyPhysics(fairyEntity)
 
-            // Apply physics force
-            if (physicsForce != null) {
-                physicsForce.force = totalForce
-            }
+            applyDirectBehaviorMotion(
+                scene = context.scene,
+                fairyEntity = fairyEntity,
+                behavior = behavior,
+                transform = transform,
+                visualTransform = visualTransform,
+                hmdPos = hmdPos,
+                animationFacingPolicy = animationFacingPolicy,
+                dt = dt
+            )
 
-            // Keep the visual GLB separated from the physics proxy so rigid body updates cannot
-            // overwrite the model scale or animation hierarchy.
-            visualTransform.position = fairyPos
-
-            // Apply visual rotation manually. The physics capsule itself stays rotation-locked.
-            val pitch = if (behavior.hasRecordedInitialRotation) behavior.initialPitch else 0f
-            val roll = if (behavior.hasRecordedInitialRotation) behavior.initialRoll else 0f
-            visualTransform.eulerAngles = EulerAngles(pitch = pitch, yaw = behavior.currentYaw, roll = roll)
+            // #region debug-point D:post-reset-motion-watch
+            samplePostActionWatch(
+                fairyEntity = fairyEntity,
+                behavior = behavior,
+                transform = transform,
+                visualTransform = visualTransform,
+                hmdPos = hmdPos,
+                physicsForce = physicsForce,
+                dt = dt
+            )
+            // #endregion
         }
         wasFollowEnabled = followEnabled
     }
 
     private fun isCarryingObject(context: SceneUpdateContext, fairyEntity: Entity): Boolean {
         val actorId = fairyEntity.components[InteractionActorComponent::class.java]?.actorId
-            ?: DEFAULT_FAIRY_ACTOR_ID
+            ?: DEFAULT_BEHAVIOR_FAIRY_ACTOR_ID
         return context.scene.queryEntity(pickedCondition).any { picked ->
             picked.components[PickedObjectFollowComponent::class.java]?.holderActorId == actorId
         }
     }
 
-    private fun applyCarryingDirectMotion(
+    private fun handleActionRecoveryGrace(
         fairyEntity: Entity,
         behavior: FairyBehaviorComponent,
         transform: TransformComponent,
-        physicsForce: PhysicsForceComponent?,
+        visualTransform: TransformComponent,
+        hmdPos: Vector3,
+        avatarController: AvatarController?,
+        dt: Float
+    ): Boolean {
+        val recovery = fairyEntity.components[ActionRecoveryGraceComponent::class.java] ?: return false
+        val anchorPosition = recovery.anchorPosition ?: transform.position.also {
+            recovery.anchorPosition = it
+        }
+
+        recovery.remainingSeconds -= dt
+
+        if (!recovery.hasResetBehaviorState) {
+            resetBehaviorStateAfterAction(
+                fairyEntity = fairyEntity,
+                behavior = behavior,
+                transform = transform,
+                visualTransform = visualTransform,
+                avatarController = avatarController
+            )
+            recovery.hasResetBehaviorState = true
+        }
+
+        prepareScriptDrivenFairy(fairyEntity)
+        transform.position = anchorPosition
+
+        behavior.lastPosition = anchorPosition
+        behavior.hasRecordedLastPosition = true
+        behavior.baseY = anchorPosition.y
+        behavior.currentTarget = null
+        behavior.isWaitingForAnimation = false
+        behavior.motionSpeed = 0f
+        behavior.inertiaVelocity = Vector3.ZERO
+        behavior.isInertiaSliding = false
+
+        visualTransform.position = anchorPosition
+        if (avatarController.facingPolicy() == AnimationFacingPolicy.FACE_PLAYER) {
+            faceTargetPosition(
+                behavior = behavior,
+                from = anchorPosition,
+                target = hmdPos,
+                turnSpeed = ANIMATION_FACE_PLAYER_TURN_SPEED,
+                dt = dt
+            )
+        }
+        applyFairyYaw(transform, visualTransform, behavior)
+
+        // #region debug-point D:recovery-grace-tick
+        debugPostActionWatchEvent(
+            fairyEntity = fairyEntity,
+            behavior = behavior,
+            transform = transform,
+            visualTransform = visualTransform,
+            hmdPos = null,
+            hypothesisId = "D",
+            message = "[DEBUG] action recovery grace tick",
+            extra = mapOf(
+                "remaining" to recovery.remainingSeconds,
+                "anchor" to anchorPosition.debugString(),
+                "collision" to (fairyEntity.components[CollisionComponent::class.java]?.collisionResponseMode?.toString() ?: "null"),
+                "rb" to (fairyEntity.components[RigidBodyComponent::class.java]?.rigidBodyMode?.toString() ?: "null")
+            )
+        )
+        // #endregion
+
+        if (recovery.remainingSeconds <= 0f) {
+            prepareScriptDrivenFairy(fairyEntity)
+            transform.position = anchorPosition
+            visualTransform.position = anchorPosition
+            behavior.lastPosition = anchorPosition
+            behavior.hasRecordedLastPosition = true
+            behavior.baseY = anchorPosition.y
+            behavior.state = FairyState.RANDOM_WAITING
+            behavior.currentTarget = null
+            behavior.waitTimer = POST_ACTION_IDLE_SECONDS
+            behavior.isWaitingForAnimation = false
+            behavior.velocity = Vector3.ZERO
+            behavior.motionSpeed = 0f
+            behavior.inertiaVelocity = Vector3.ZERO
+            behavior.isInertiaSliding = false
+            fairyEntity.components.remove(ActionRecoveryGraceComponent::class.java)
+            // #region debug-point D:recovery-grace-end
+            debugPostActionWatchEvent(
+                fairyEntity = fairyEntity,
+                behavior = behavior,
+                transform = transform,
+                visualTransform = visualTransform,
+                hmdPos = null,
+                hypothesisId = "D",
+                message = "[DEBUG] action recovery grace ended",
+                extra = mapOf(
+                    "anchor" to anchorPosition.debugString()
+                )
+            )
+            // #endregion
+        }
+        return true
+    }
+
+    private fun applyDirectBehaviorMotion(
+        scene: Scene,
+        fairyEntity: Entity,
+        behavior: FairyBehaviorComponent,
+        transform: TransformComponent,
+        visualTransform: TransformComponent,
+        hmdPos: Vector3,
+        animationFacingPolicy: AnimationFacingPolicy,
         dt: Float
     ) {
-        physicsForce?.force = Vector3.ZERO
-        fairyEntity.components[RigidBodyComponent::class.java]?.let { rigidBody ->
-            rigidBody.rigidBodyMode = RigidBodyMode.KINEMATIC
-            rigidBody.isAffectedByGravity = false
+        prepareScriptDrivenFairy(fairyEntity)
+
+        val current = transform.position
+        var next = current
+        var travelDirection: Vector3? = null
+
+        when (behavior.state) {
+            FairyState.RANDOM_MOVING, FairyState.FOLLOWING -> {
+                val target = behavior.currentTarget
+                val direction = target?.let { direction(current, it) }
+                if (target != null && direction != null) {
+                    val distanceToTarget = distance(current, target)
+                    val baseSpeed = if (behavior.state == FairyState.FOLLOWING) {
+                        behavior.followSpeed * FOLLOWING_SPEED_SCALE
+                    } else {
+                        behavior.speed
+                    }
+                    val easedSpeed = updateEasedMotionSpeed(
+                        behavior = behavior,
+                        targetSpeed = baseSpeed,
+                        distanceToTarget = distanceToTarget,
+                        dt = dt
+                    )
+                    val step = (easedSpeed * dt).coerceAtMost(distanceToTarget)
+                    val desiredNext = Vector3(
+                        current.x + direction.x * step,
+                        current.y + direction.y * step,
+                        current.z + direction.z * step
+                    )
+                    next = constrainBySpatialMesh(
+                        scene = scene,
+                        fairyEntity = fairyEntity,
+                        current = current,
+                        desiredNext = desiredNext
+                    )
+                    travelDirection = direction
+                }
+            }
+
+            FairyState.RANDOM_WAITING, FairyState.FOLLOW_HOVERING -> {
+                behavior.motionSpeed = 0f
+                behavior.floatTime += dt
+                val floatOffset = behavior.floatAmplitude * sin(behavior.floatTime * behavior.floatSpeed) *
+                    abs(sin(behavior.floatTime * behavior.floatSpeed * 0.7f))
+                val targetY = behavior.baseY + floatOffset
+                val maxYStep = DIRECT_IDLE_VERTICAL_SPEED * dt
+                val yDelta = (targetY - current.y).coerceIn(-maxYStep, maxYStep)
+                next = Vector3(current.x, current.y + yDelta, current.z)
+
+                if (behavior.state == FairyState.FOLLOW_HOVERING) {
+                    val faceDirX = hmdPos.x - current.x
+                    val faceDirZ = hmdPos.z - current.z
+                    if (faceDirX != 0f || faceDirZ != 0f) {
+                        val targetYaw = atan2(faceDirX, faceDirZ).toDegrees()
+                        behavior.currentYaw = lerpAngle(behavior.currentYaw, targetYaw, 3.0f * dt)
+                    }
+                }
+            }
         }
-        fairyEntity.components[PhysicsVelocityComponent::class.java]?.linearVelocity = Vector3.ZERO
+
+        if (animationFacingPolicy == AnimationFacingPolicy.FACE_PLAYER) {
+            faceTargetPosition(
+                behavior = behavior,
+                from = next,
+                target = hmdPos,
+                turnSpeed = ANIMATION_FACE_PLAYER_TURN_SPEED,
+                dt = dt
+            )
+        } else if (behavior.state == FairyState.FOLLOWING) {
+            faceTargetPosition(
+                behavior = behavior,
+                from = next,
+                target = hmdPos,
+                turnSpeed = FOLLOWING_LOOK_TURN_SPEED,
+                dt = dt
+            )
+        } else {
+            travelDirection?.let { direction ->
+                faceDirection(
+                    behavior = behavior,
+                    direction = direction,
+                    turnSpeed = MOVEMENT_TURN_SPEED,
+                    dt = dt
+                )
+            }
+        }
+
+        transform.position = next
+        visualTransform.position = next
+        applyFairyYaw(transform, visualTransform, behavior)
+
+        val safeDt = dt.coerceAtLeast(0.001f)
+        behavior.velocity = Vector3(
+            (next.x - current.x) / safeDt,
+            (next.y - current.y) / safeDt,
+            (next.z - current.z) / safeDt
+        )
+        behavior.lastPosition = next
+        behavior.hasRecordedLastPosition = true
+        behavior.baseY = if (behavior.state == FairyState.RANDOM_WAITING || behavior.state == FairyState.FOLLOW_HOVERING) {
+            behavior.baseY
+        } else {
+            next.y
+        }
+    }
+
+    private fun applyCarryingDirectMotion(
+        scene: Scene,
+        fairyEntity: Entity,
+        behavior: FairyBehaviorComponent,
+        transform: TransformComponent,
+        hmdPos: Vector3,
+        animationFacingPolicy: AnimationFacingPolicy,
+        dt: Float
+    ) {
+        prepareScriptDrivenFairy(fairyEntity)
         val target = behavior.currentTarget ?: return
         val direction = direction(transform.position, target) ?: return
         val speed = when (behavior.state) {
@@ -327,25 +546,160 @@ class FairyBehaviorSystem : System() {
             FairyState.RANDOM_MOVING -> behavior.speed
             FairyState.RANDOM_WAITING,
             FairyState.FOLLOW_HOVERING -> 0.35f
-        }.coerceAtMost(MAX_CARRYING_DIRECT_SPEED)
+        }.let { baseSpeed ->
+            val cappedSpeed = if (behavior.state == FairyState.FOLLOWING) {
+                baseSpeed * FOLLOWING_SPEED_SCALE
+            } else {
+                baseSpeed
+            }.coerceAtMost(MAX_CARRYING_DIRECT_SPEED)
+            updateEasedMotionSpeed(
+                behavior = behavior,
+                targetSpeed = cappedSpeed,
+                distanceToTarget = distance(transform.position, target),
+                dt = dt
+            )
+        }
         val distanceToTarget = distance(transform.position, target)
+        val current = transform.position
         val step = (speed * dt).coerceAtMost(distanceToTarget)
-        transform.position = Vector3(
-            transform.position.x + direction.x * step,
-            transform.position.y + direction.y * step,
-            transform.position.z + direction.z * step
+        val desiredNext = Vector3(
+            current.x + direction.x * step,
+            current.y + direction.y * step,
+            current.z + direction.z * step
         )
-        if (direction.x != 0f || direction.z != 0f) {
-            val targetYaw = atan2(direction.x, direction.z).toDegrees()
-            behavior.currentYaw = lerpAngle(behavior.currentYaw, targetYaw, 5.0f * dt)
+        transform.position = constrainBySpatialMesh(
+            scene = scene,
+            fairyEntity = fairyEntity,
+            current = current,
+            desiredNext = desiredNext
+        )
+        val safeDt = dt.coerceAtLeast(0.001f)
+        behavior.velocity = Vector3(
+            (transform.position.x - current.x) / safeDt,
+            (transform.position.y - current.y) / safeDt,
+            (transform.position.z - current.z) / safeDt
+        )
+        if (animationFacingPolicy == AnimationFacingPolicy.FACE_PLAYER) {
+            faceTargetPosition(
+                behavior = behavior,
+                from = transform.position,
+                target = hmdPos,
+                turnSpeed = ANIMATION_FACE_PLAYER_TURN_SPEED,
+                dt = dt
+            )
+        } else if (behavior.state == FairyState.FOLLOWING) {
+            faceTargetPosition(
+                behavior = behavior,
+                from = transform.position,
+                target = hmdPos,
+                turnSpeed = FOLLOWING_LOOK_TURN_SPEED,
+                dt = dt
+            )
+        } else {
+            faceDirection(
+                behavior = behavior,
+                direction = direction,
+                turnSpeed = MOVEMENT_TURN_SPEED,
+                dt = dt
+            )
         }
     }
 
-    private fun restoreNormalFairyPhysics(fairyEntity: Entity) {
-        fairyEntity.components[RigidBodyComponent::class.java]?.let { rigidBody ->
-            rigidBody.rigidBodyMode = RigidBodyMode.DYNAMIC
-            rigidBody.isAffectedByGravity = false
+    private fun applySemanticResidenceIdle(
+        fairyEntity: Entity,
+        residence: FairySemanticResidenceComponent,
+        behavior: FairyBehaviorComponent,
+        transform: TransformComponent,
+        visualTransform: TransformComponent,
+        hmdPos: Vector3,
+        animationFacingPolicy: AnimationFacingPolicy,
+        avatarController: AvatarController?,
+        dt: Float
+    ) {
+        prepareScriptDrivenFairy(fairyEntity)
+
+        transform.position = residence.targetPosition
+        visualTransform.position = residence.targetPosition
+        if (animationFacingPolicy == AnimationFacingPolicy.FACE_PLAYER) {
+            faceTargetPosition(
+                behavior = behavior,
+                from = residence.targetPosition,
+                target = hmdPos,
+                turnSpeed = ANIMATION_FACE_PLAYER_TURN_SPEED,
+                dt = dt
+            )
+            applyFairyYaw(transform, visualTransform, behavior)
+        } else {
+            behavior.currentYaw = transform.eulerAngles.yaw
+            visualTransform.eulerAngles = transform.eulerAngles
         }
+        behavior.lastPosition = residence.targetPosition
+        behavior.hasRecordedLastPosition = true
+        behavior.currentTarget = null
+        behavior.waitTimer = 0f
+        behavior.isWaitingForAnimation = false
+        behavior.state = FairyState.RANDOM_WAITING
+        behavior.motionSpeed = 0f
+        behavior.inertiaVelocity = Vector3.ZERO
+        behavior.isInertiaSliding = false
+
+        residence.idleRefreshSeconds -= dt
+        if (residence.idleRefreshSeconds <= 0f) {
+            avatarController?.requestStandbyAnimation()
+            residence.idleRefreshSeconds = RESIDENCE_IDLE_REFRESH_SECONDS
+        }
+    }
+
+    private fun resumeCarryingObjectAfterAction(
+        fairyEntity: Entity,
+        behavior: FairyBehaviorComponent,
+        transform: TransformComponent,
+        visualTransform: TransformComponent,
+        hmdEntity: Entity,
+        hmdPos: Vector3,
+        avatarController: AvatarController?
+    ) {
+        val fairyPos = transform.position
+        prepareScriptDrivenFairy(fairyEntity)
+        behavior.lastPosition = fairyPos
+        behavior.hasRecordedLastPosition = true
+        behavior.baseY = fairyPos.y
+        behavior.waitTimer = 0f
+        behavior.isWaitingForAnimation = false
+        behavior.velocity = Vector3.ZERO
+        behavior.motionSpeed = 0f
+        behavior.inertiaVelocity = Vector3.ZERO
+        behavior.isInertiaSliding = false
+        behavior.state = if (horizontalDistance(fairyPos, hmdPos) > behavior.outerRadius) {
+            FairyState.FOLLOWING
+        } else {
+            FairyState.RANDOM_MOVING
+        }
+        behavior.currentTarget = if (behavior.state == FairyState.FOLLOWING) {
+            getFollowViewCenterTarget(hmdEntity, fairyEntity, behavior)
+        } else {
+            getRandomTargetInInnerRadius(hmdPos, behavior.innerRadius, behavior.hoverHeight, behavior.zDeviationRange)
+        }
+        visualTransform.position = fairyPos
+        applyFairyYaw(transform, visualTransform, behavior)
+        avatarController?.requestMovingAnimation()
+    }
+
+    private fun getFollowViewCenterTarget(
+        hmdEntity: Entity,
+        fairyEntity: Entity,
+        behavior: FairyBehaviorComponent
+    ): Vector3 {
+        val hmdTransform = hmdEntity.components[TransformComponent::class.java]
+        val hmdOrigin = hmdTransform?.position ?: return behavior.currentTarget ?: Vector3.ZERO
+        val forward = hmdTransform?.eulerAngles?.yaw
+            ?.let(::viewForwardFromYaw)
+            ?: DEFAULT_HMD_FORWARD
+        return Vector3(
+            hmdOrigin.x + forward.x * FOLLOW_VIEW_CENTER_DISTANCE,
+            hmdOrigin.y + behavior.hoverHeight,
+            hmdOrigin.z + forward.z * FOLLOW_VIEW_CENTER_DISTANCE
+        )
     }
 
     private fun getRandomTargetInInnerRadius(hmdPos: Vector3, innerRadius: Float, hoverHeight: Float, zDeviationRange: Float): Vector3 {
@@ -362,7 +716,7 @@ class FairyBehaviorSystem : System() {
         val dx = pos.x - target.x
         val dy = pos.y - target.y
         val dz = pos.z - target.z
-        return sqrt(dx*dx + dy*dy + dz*dz) < 0.15f // Increased tolerance slightly for physics
+        return sqrt(dx*dx + dy*dy + dz*dz) < 0.15f
     }
 
     private fun lerpAngle(a: Float, b: Float, t: Float): Float {
@@ -372,19 +726,111 @@ class FairyBehaviorSystem : System() {
         return a + diff * t
     }
 
+    private fun updateEasedMotionSpeed(
+        behavior: FairyBehaviorComponent,
+        targetSpeed: Float,
+        distanceToTarget: Float,
+        dt: Float
+    ): Float {
+        val arrivalFactor = smoothStep(
+            (distanceToTarget / DIRECT_MOVEMENT_SLOWDOWN_RADIUS).coerceIn(0f, 1f)
+        ).coerceAtLeast(MIN_MOTION_SPEED_FACTOR)
+        val desiredSpeed = targetSpeed * arrivalFactor
+        val maxDelta = if (desiredSpeed > behavior.motionSpeed) {
+            MOVEMENT_ACCELERATION
+        } else {
+            MOVEMENT_DECELERATION
+        } * dt
+        behavior.motionSpeed = approach(behavior.motionSpeed, desiredSpeed, maxDelta)
+        return behavior.motionSpeed
+    }
+
+    private fun faceTargetPosition(
+        behavior: FairyBehaviorComponent,
+        from: Vector3,
+        target: Vector3,
+        turnSpeed: Float,
+        dt: Float
+    ) {
+        val faceDirX = target.x - from.x
+        val faceDirZ = target.z - from.z
+        if (faceDirX == 0f && faceDirZ == 0f) return
+        val targetYaw = atan2(faceDirX, faceDirZ).toDegrees()
+        behavior.currentYaw = lerpAngle(
+            behavior.currentYaw,
+            targetYaw,
+            (turnSpeed * dt).coerceIn(0f, 1f)
+        )
+    }
+
+    private fun faceDirection(
+        behavior: FairyBehaviorComponent,
+        direction: Vector3,
+        turnSpeed: Float,
+        dt: Float
+    ) {
+        if (direction.x == 0f && direction.z == 0f) return
+        val targetYaw = atan2(direction.x, direction.z).toDegrees()
+        behavior.currentYaw = lerpAngle(
+            behavior.currentYaw,
+            targetYaw,
+            (turnSpeed * dt).coerceIn(0f, 1f)
+        )
+    }
+
+    private fun applyFairyYaw(
+        transform: TransformComponent,
+        visualTransform: TransformComponent,
+        behavior: FairyBehaviorComponent
+    ) {
+        val bodyEuler = transform.eulerAngles
+        transform.eulerAngles = EulerAngles(
+            pitch = bodyEuler.pitch,
+            yaw = behavior.currentYaw,
+            roll = bodyEuler.roll
+        )
+
+        val visualPitch = if (behavior.hasRecordedInitialRotation) behavior.initialPitch else 0f
+        val visualRoll = if (behavior.hasRecordedInitialRotation) behavior.initialRoll else 0f
+        visualTransform.eulerAngles = EulerAngles(
+            pitch = visualPitch,
+            yaw = behavior.currentYaw,
+            roll = visualRoll
+        )
+    }
+
+    private fun AvatarController?.facingPolicy(): AnimationFacingPolicy {
+        return this?.currentFacingPolicy ?: AnimationFacingPolicy.KEEP_BEHAVIOR
+    }
+
+    private fun approach(current: Float, target: Float, maxDelta: Float): Float {
+        val delta = target - current
+        if (abs(delta) <= maxDelta) return target
+        return current + if (delta > 0f) maxDelta else -maxDelta
+    }
+
+    private fun smoothStep(value: Float): Float {
+        val x = value.coerceIn(0f, 1f)
+        return x * x * (3f - 2f * x)
+    }
+
     private fun Float.toDegrees() = this * 180f / Math.PI.toFloat()
 
     private fun scheduleRandomRestBehavior(
         context: SceneUpdateContext,
         behavior: FairyBehaviorComponent,
-        avatarController: com.example.matefairy01.avatar.AvatarController?,
+        avatarController: AvatarController?,
         fairyPos: Vector3
     ) {
+        // Temporarily disable random football interaction while preserving dialogue-triggered
+        // play-football. Restore by uncommenting this block after random action instability is fixed.
+        /*
         if (tryScheduleRandomPlayFootball(context, fairyPos)) {
             behavior.isWaitingForAnimation = false
             behavior.waitTimer = RANDOM_ACTION_MIN_WAIT_SECONDS
             return
         }
+        */
 
         val idleAnim = avatarController?.requestIdleAnimation()
         if (idleAnim != null) {
@@ -431,43 +877,286 @@ class FairyBehaviorSystem : System() {
         )
     }
 
-    private fun reconcileAfterAction(
+    private fun resetBehaviorStateAfterAction(
+        fairyEntity: Entity,
         behavior: FairyBehaviorComponent,
-        fairyPos: Vector3,
-        hmdPos: Vector3,
-        avatarController: com.example.matefairy01.avatar.AvatarController?
+        transform: TransformComponent,
+        visualTransform: TransformComponent,
+        avatarController: AvatarController?
     ) {
+        val fairyPos = transform.position
+        prepareScriptDrivenFairy(fairyEntity)
         behavior.lastPosition = fairyPos
         behavior.hasRecordedLastPosition = true
         behavior.baseY = fairyPos.y
+        behavior.state = FairyState.RANDOM_WAITING
+        behavior.currentTarget = null
+        behavior.waitTimer = POST_ACTION_IDLE_SECONDS
+        behavior.isWaitingForAnimation = false
+        behavior.velocity = Vector3.ZERO
+        behavior.motionSpeed = 0f
+        behavior.inertiaVelocity = Vector3.ZERO
+        behavior.isInertiaSliding = false
+        behavior.floatTime = 0f
+
+        visualTransform.position = fairyPos
+          applyFairyYaw(transform, visualTransform, behavior)
+        avatarController?.requestStandbyAnimation()
+        // #region debug-point C:post-action-reset
+        val debugKey = java.lang.System.identityHashCode(fairyEntity)
+        debugWatchRemainingSeconds[debugKey] = POST_ACTION_DEBUG_WATCH_SECONDS
+        debugWatchSampleCooldownSeconds[debugKey] = 0f
+        debugPostActionWatchEvent(
+            fairyEntity = fairyEntity,
+            behavior = behavior,
+            transform = transform,
+            visualTransform = visualTransform,
+            hmdPos = null,
+            hypothesisId = "C",
+            message = "[DEBUG] post-action behavior state reset",
+            extra = mapOf(
+                "idleSeconds" to POST_ACTION_IDLE_SECONDS
+            )
+        )
+        // #endregion
+    }
+
+    private fun ensureCarryingMovementTarget(
+        behavior: FairyBehaviorComponent,
+        fairyEntity: Entity,
+        hmdEntity: Entity,
+        transform: TransformComponent,
+        hmdPos: Vector3
+    ) {
+        val currentTarget = behavior.currentTarget
+        val needsTarget = currentTarget == null ||
+            hasReachedTarget(transform.position, currentTarget) ||
+            behavior.state == FairyState.RANDOM_WAITING ||
+            behavior.state == FairyState.FOLLOW_HOVERING
+        if (!needsTarget) return
+
+        behavior.state = if (horizontalDistance(transform.position, hmdPos) > behavior.outerRadius) {
+            FairyState.FOLLOWING
+        } else {
+            FairyState.RANDOM_MOVING
+        }
         behavior.waitTimer = 0f
         behavior.isWaitingForAnimation = false
-
-        val distance2D = horizontalDistance(fairyPos, hmdPos)
-        if (distance2D > behavior.outerRadius) {
-            behavior.state = FairyState.FOLLOWING
-            behavior.currentTarget = getRandomTargetInInnerRadius(
-                hmdPos,
-                behavior.innerRadius,
-                behavior.hoverHeight,
-                behavior.zDeviationRange
-            )
-            avatarController?.requestMovingAnimation()
+        behavior.currentTarget = if (behavior.state == FairyState.FOLLOWING) {
+            getFollowViewCenterTarget(hmdEntity, fairyEntity, behavior)
         } else {
-            behavior.state = FairyState.RANDOM_MOVING
-            behavior.currentTarget = getRandomTargetInInnerRadius(
-                hmdPos,
-                behavior.innerRadius,
-                behavior.hoverHeight,
-                behavior.zDeviationRange
-            )
+            getRandomTargetInInnerRadius(hmdPos, behavior.innerRadius, behavior.hoverHeight, behavior.zDeviationRange)
         }
     }
+
+    private fun prepareScriptDrivenFairy(entity: Entity) {
+        entity.components[PhysicsForceComponent::class.java]?.force = Vector3.ZERO
+        clearPhysicsVelocity(entity)
+        entity.components[RigidBodyComponent::class.java]?.let { rigidBody ->
+            rigidBody.rigidBodyMode = RigidBodyMode.KINEMATIC
+            rigidBody.isAffectedByGravity = false
+        }
+        entity.components[CollisionComponent::class.java]?.collisionResponseMode =
+            CollisionResponseMode.TRIGGER_LITE
+    }
+
+    private fun constrainBySpatialMesh(
+        scene: Scene,
+        fairyEntity: Entity,
+        current: Vector3,
+        desiredNext: Vector3
+    ): Vector3 {
+        if (!desiredNext.isFiniteVector()) return current
+        if (!current.isFiniteVector()) return desiredNext
+
+        val delta = desiredNext.minus(current)
+        val moveDistance = delta.magnitudeOrZero()
+        if (!moveDistance.isFinite() || moveDistance <= MIN_SPATIAL_MESH_CAST_DISTANCE) {
+            return desiredNext
+        }
+
+        val direction = Vector3(
+            delta.x / moveDistance,
+            delta.y / moveDistance,
+            delta.z / moveDistance
+        )
+        if (!direction.isFiniteVector()) return desiredNext
+
+        val castShape = spatialMeshCastShape
+            ?: ShapeResource.createCapsule(
+                height = FAIRY_SPATIAL_MESH_CAST_HEIGHT,
+                radius = FAIRY_SPATIAL_MESH_CAST_RADIUS
+            ).also { spatialMeshCastShape = it }
+
+        val castResults = runCatching {
+            scene.convexCast(
+                shape = castShape,
+                origin = current,
+                orientation = Quat.identity(),
+                direction = direction,
+                length = moveDistance + SPATIAL_MESH_SKIN_WIDTH,
+                hitMode = CollisionCastHitMode.ALL,
+                group = CollisionGroup(CollisionGroup.COLLISION_GROUP_DEFAULT),
+                referenceEntity = fairyEntity.getParent()
+            ).results
+        }.getOrElse {
+            return desiredNext
+        }
+
+        val hit = castResults
+            .asSequence()
+            .filter { result ->
+                result.entity != fairyEntity &&
+                    result.distance.isFinite() &&
+                    result.distance >= 0f &&
+                    SpatialMeshRuntimeDependencies.query.getAnchorUUID(result.entity) != null
+            }
+            .minByOrNull { it.distance }
+            ?: return desiredNext
+
+        val allowedDistance = (hit.distance - SPATIAL_MESH_SKIN_WIDTH)
+            .coerceIn(0f, moveDistance)
+        return Vector3(
+            current.x + direction.x * allowedDistance,
+            current.y + direction.y * allowedDistance,
+            current.z + direction.z * allowedDistance
+        )
+    }
+
+    private fun clearPhysicsVelocity(entity: Entity) {
+        val velocity = entity.components[PhysicsVelocityComponent::class.java]
+            ?: PhysicsVelocityComponent().also { entity.components.set(it) }
+        velocity.linearVelocity = Vector3.ZERO
+        velocity.angularVelocity = Vector3.ZERO
+    }
+
+    // #region debug-point DBG:boombox-drop-behavior-reporter
+    private fun samplePostActionWatch(
+        fairyEntity: Entity,
+        behavior: FairyBehaviorComponent,
+        transform: TransformComponent,
+        visualTransform: TransformComponent,
+        hmdPos: Vector3,
+        physicsForce: PhysicsForceComponent?,
+        dt: Float
+    ) {
+        val key = java.lang.System.identityHashCode(fairyEntity)
+        val remaining = debugWatchRemainingSeconds[key] ?: return
+        val nextRemaining = remaining - dt
+        if (nextRemaining <= 0f) {
+            debugWatchRemainingSeconds.remove(key)
+            debugWatchSampleCooldownSeconds.remove(key)
+            return
+        }
+        debugWatchRemainingSeconds[key] = nextRemaining
+        val cooldown = (debugWatchSampleCooldownSeconds[key] ?: 0f) - dt
+        val velocity = fairyEntity.components[PhysicsVelocityComponent::class.java]?.linearVelocity
+        val force = physicsForce?.force
+        val shouldLogSpike =
+            (velocity?.magnitudeOrZero() ?: 0f) >= POST_ACTION_DEBUG_VELOCITY_SPIKE ||
+                (force?.magnitudeOrZero() ?: 0f) >= POST_ACTION_DEBUG_FORCE_SPIKE
+        if (cooldown > 0f && !shouldLogSpike) {
+            debugWatchSampleCooldownSeconds[key] = cooldown
+            return
+        }
+        debugWatchSampleCooldownSeconds[key] = POST_ACTION_DEBUG_SAMPLE_SECONDS
+        debugPostActionWatchEvent(
+            fairyEntity = fairyEntity,
+            behavior = behavior,
+            transform = transform,
+            visualTransform = visualTransform,
+            hmdPos = hmdPos,
+            hypothesisId = if (shouldLogSpike) "D" else "C",
+            message = if (shouldLogSpike) {
+                "[DEBUG] post-action velocity/force spike"
+            } else {
+                "[DEBUG] post-action watch sample"
+            },
+            extra = mapOf(
+                "remaining" to nextRemaining,
+                "velocity" to (velocity?.debugString() ?: "null"),
+                "velocityMag" to (velocity?.magnitudeOrZero() ?: 0f),
+                "force" to (force?.debugString() ?: "null"),
+                "forceMag" to (force?.magnitudeOrZero() ?: 0f)
+            )
+        )
+    }
+
+    private fun debugPostActionWatchEvent(
+        fairyEntity: Entity,
+        behavior: FairyBehaviorComponent,
+        transform: TransformComponent,
+        visualTransform: TransformComponent,
+        hmdPos: Vector3?,
+        hypothesisId: String,
+        message: String,
+        extra: Map<String, Any> = emptyMap()
+    ) {
+        val velocity = fairyEntity.components[PhysicsVelocityComponent::class.java]?.linearVelocity
+        val data = mutableMapOf<String, Any>(
+            "entityKey" to java.lang.System.identityHashCode(fairyEntity),
+            "state" to behavior.state.name,
+            "pos" to transform.position.debugString(),
+            "visualPos" to visualTransform.position.debugString(),
+            "visualDelta" to visualTransform.position.minus(transform.position).debugString(),
+            "target" to (behavior.currentTarget?.debugString() ?: "null"),
+            "waitTimer" to behavior.waitTimer,
+            "velocity" to (velocity?.debugString() ?: "null"),
+            "velocityMag" to (velocity?.magnitudeOrZero() ?: 0f),
+            "hasRecovery" to (fairyEntity.components[ActionRecoveryGraceComponent::class.java] != null),
+            "hasActionLock" to (fairyEntity.components[FairyActionLockComponent::class.java] != null)
+        )
+        if (hmdPos != null) {
+            data["hmdPos"] = hmdPos.debugString()
+            data["distance2D"] = horizontalDistance(transform.position, hmdPos)
+        }
+        data.putAll(extra)
+        com.example.matefairy01.debug.DebugRuntimeDependencies.reporter.post(
+            com.example.matefairy01.debug.DebugEvent(
+                sessionId = "boombox-drop-drift",
+                runId = "post-fix-direct-motion",
+                hypothesisId = hypothesisId,
+                location = "FairyBehaviorSystem.kt",
+                message = message,
+                data = data
+            )
+        )
+    }
+
+    private fun Vector3.debugString(): String {
+        return "%.3f,%.3f,%.3f".format(x, y, z)
+    }
+
+    private fun Vector3.minus(other: Vector3): Vector3 {
+        return Vector3(x - other.x, y - other.y, z - other.z)
+    }
+
+    private fun Vector3.magnitudeOrZero(): Float {
+        return sqrt(x * x + y * y + z * z)
+    }
+
+    private fun Vector3.isFiniteVector(): Boolean {
+        return x.isFinite() && y.isFinite() && z.isFinite()
+    }
+    // #endregion
 
     private fun horizontalDistance(a: Vector3, b: Vector3): Float {
         val dx = a.x - b.x
         val dz = a.z - b.z
         return sqrt(dx * dx + dz * dz)
+    }
+
+    private fun horizontalDirection(from: Vector3, to: Vector3): Vector3? {
+        val dx = to.x - from.x
+        val dz = to.z - from.z
+        val length = sqrt(dx * dx + dz * dz)
+        if (length <= 0.001f) return null
+        return Vector3(dx / length, 0f, dz / length)
+    }
+
+    private fun viewForwardFromYaw(yawDegrees: Float): Vector3 {
+        val radians = yawDegrees * Math.PI.toFloat() / 180f
+        return Vector3(-sin(radians), 0f, -cos(radians))
     }
 
     private fun distance(a: Vector3, b: Vector3): Float {
@@ -518,5 +1207,28 @@ class FairyBehaviorSystem : System() {
         private const val RANDOM_ACTION_MIN_WAIT_SECONDS = 1.5f
         private const val MIN_RANDOM_ACTION_TARGET_Y = -0.5f
         private const val MAX_CARRYING_DIRECT_SPEED = 0.65f
+        private const val FOLLOWING_SPEED_SCALE = 0.85f
+        private const val MOVEMENT_ACCELERATION = 1.4f
+        private const val MOVEMENT_DECELERATION = 2.1f
+        private const val MIN_MOTION_SPEED_FACTOR = 0.14f
+        private const val MOVEMENT_TURN_SPEED = 5.0f
+        private const val FOLLOWING_LOOK_TURN_SPEED = 6.5f
+          private const val ANIMATION_FACE_PLAYER_TURN_SPEED = 10.0f
+        private const val FOLLOW_VIEW_CENTER_DISTANCE = 0.9f
+        private const val DIRECT_MOVEMENT_SLOWDOWN_RADIUS = 0.8f
+        private const val DIRECT_IDLE_VERTICAL_SPEED = 0.25f
+        private const val FAIRY_SPATIAL_MESH_CAST_HEIGHT = 0.34f
+        private const val FAIRY_SPATIAL_MESH_CAST_RADIUS = 0.14f
+        private const val SPATIAL_MESH_SKIN_WIDTH = 0.04f
+        private const val MIN_SPATIAL_MESH_CAST_DISTANCE = 0.001f
+        private const val FOLLOW_TARGET_REFRESH_MARGIN = 0.45f
+        private const val RESIDENCE_IDLE_REFRESH_SECONDS = 2.8f
+        private const val POST_ACTION_IDLE_SECONDS = 1.2f
+        private const val POST_ACTION_DEBUG_WATCH_SECONDS = 6.0f
+        private const val POST_ACTION_DEBUG_SAMPLE_SECONDS = 0.25f
+        private const val POST_ACTION_DEBUG_VELOCITY_SPIKE = 0.35f
+        private const val POST_ACTION_DEBUG_FORCE_SPIKE = 5.0f
+        private const val DEFAULT_BEHAVIOR_FAIRY_ACTOR_ID = "fairy"
+        private val DEFAULT_HMD_FORWARD = Vector3(0f, 0f, -1f)
     }
 }

@@ -1,13 +1,14 @@
 package com.example.matefairy01.interaction
 
 import android.util.Log
+import com.example.matefairy01.animation.ActionAnimationScheduler
+import com.example.matefairy01.animation.AnimationConfig
 import com.example.matefairy01.content.ResourcePhysicsActivationComponent
 import com.pico.spatial.core.ecs.PhysicsForceComponent
 import com.pico.spatial.core.ecs.PhysicsVelocityComponent
 import com.pico.spatial.core.ecs.RigidBodyComponent
 import com.pico.spatial.core.ecs.SceneUpdateContext
 import com.pico.spatial.core.ecs.TransformComponent
-import com.pico.spatial.core.ecs.simulation.RigidBodyMode
 import com.pico.spatial.core.math.EulerAngles
 import com.pico.spatial.core.math.Vector3
 import kotlin.math.PI
@@ -16,11 +17,16 @@ import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-class PlayFootballActionController : InteractionActionController {
+class PlayFootballActionController(
+    private val actionAnimationScheduler: ActionAnimationScheduler
+) : InteractionActionController {
     override val actionId: String = ACTION_ID
 
     override fun createInstance(request: InteractionActionRequest): InteractionActionInstance {
-        return PlayFootballActionInstance(request)
+        return PlayFootballActionInstance(
+            request = request,
+            actionAnimationScheduler = actionAnimationScheduler
+        )
     }
 
     companion object {
@@ -29,7 +35,8 @@ class PlayFootballActionController : InteractionActionController {
 }
 
 private class PlayFootballActionInstance(
-    private val request: InteractionActionRequest
+    private val request: InteractionActionRequest,
+    private val actionAnimationScheduler: ActionAnimationScheduler
 ) : InteractionActionInstance {
     override val actionId: String = PlayFootballActionController.ACTION_ID
 
@@ -39,19 +46,30 @@ private class PlayFootballActionInstance(
     private var finishTimerSeconds = 0f
     private var elapsedSeconds = 0f
     private var activeSubject: com.pico.spatial.core.ecs.Entity? = null
-    private var previousSubjectRigidBodyMode: RigidBodyMode? = null
+    private var activeFootball: com.pico.spatial.core.ecs.Entity? = null
+    private val subjectMotion = ActionSubjectMotionTemplate()
+    private var kickAnimationStarted = false
+    private var postKickRetreatTarget: Vector3? = null
+    private var debugLastSampleSeconds = -1f
 
     override fun update(context: SceneUpdateContext): InteractionActionStatus {
         elapsedSeconds += context.deltaTime
-        val subject = InteractionEntityResolver.findActor(context.scene, request.subjectId)
+        val subject = resolveSubject(context)
             ?: return InteractionActionStatus.FAILED
-        val football = InteractionEntityResolver.findObject(context.scene, footballObjectId)
+        val football = resolveFootball(context)
             ?: return InteractionActionStatus.FAILED
 
         val subjectTransform = subject.components[TransformComponent::class.java]
             ?: return InteractionActionStatus.FAILED
         val footballTransform = football.components[TransformComponent::class.java]
             ?: return InteractionActionStatus.FAILED
+        debugSample(
+            state = state,
+            subject = subject,
+            subjectTransform = subjectTransform,
+            footballTransform = footballTransform,
+            status = "tick"
+        )
 
         if (elapsedSeconds >= config.maxActionSeconds) {
             cleanupSubjectMotion(subject)
@@ -89,16 +107,42 @@ private class PlayFootballActionInstance(
                 val footballPosition = footballTransform.position
                 val directionToFootball = horizontalDirection(subjectPosition, footballPosition)
                     ?: forwardFromYaw(subjectTransform.eulerAngles.yaw)
+                val approachDistance = config.approachDistance.coerceAtLeast(MIN_SAFE_APPROACH_DISTANCE)
                 val approachTarget = Vector3(
-                    footballPosition.x - directionToFootball.x * config.approachDistance,
+                    footballPosition.x - directionToFootball.x * approachDistance,
                     footballPosition.y + config.hoverHeightAboveBall,
-                    footballPosition.z - directionToFootball.z * config.approachDistance
+                    footballPosition.z - directionToFootball.z * approachDistance
                 )
 
                 moveSubjectTowards(subject, subjectTransform, approachTarget, context.deltaTime)
                 faceDirection(subjectTransform, directionToFootball, context.deltaTime)
 
                 if (distance(subjectTransform.position, approachTarget) <= config.arrivalRadius) {
+                    clearSubjectForce(subject)
+                    state = PlayFootballState.PLAYING_KICK_ANIMATION
+                }
+                InteractionActionStatus.RUNNING
+            }
+
+            PlayFootballState.PLAYING_KICK_ANIMATION -> {
+                val subjectForward = horizontalDirection(subjectTransform.position, footballTransform.position)
+                    ?: forwardFromYaw(subjectTransform.eulerAngles.yaw)
+                faceDirection(subjectTransform, subjectForward, context.deltaTime)
+                clearSubjectForce(subject)
+                if (!kickAnimationStarted) {
+                    kickAnimationStarted = true
+                    val scheduled = actionAnimationScheduler.playActionAnimation(
+                        ownerActionId = actionId,
+                        animation = AnimationConfig.playFootballKickAnimation
+                    )
+                    if (!scheduled) {
+                        state = PlayFootballState.KICKING
+                    }
+                } else if (!actionAnimationScheduler.isActionAnimationPlaying(
+                        ownerActionId = actionId,
+                        animation = AnimationConfig.playFootballKickAnimation
+                    )
+                ) {
                     state = PlayFootballState.KICKING
                 }
                 InteractionActionStatus.RUNNING
@@ -110,15 +154,42 @@ private class PlayFootballActionInstance(
                 faceDirection(subjectTransform, subjectForward, context.deltaTime)
                 kickFootball(football, subjectForward)
                 clearSubjectForce(subject)
-
-                // TODO: 接入 Action 类动画调度器后，在这里传入 KICK_FOOTBALL 枚举并触发踢球动画。
+                postKickRetreatTarget = buildPostKickRetreatTarget(footballTransform.position, subjectForward)
+                debugSample(
+                    state = state,
+                    subject = subject,
+                    subjectTransform = subjectTransform,
+                    footballTransform = footballTransform,
+                    status = "kick"
+                )
                 state = PlayFootballState.FINISHING
                 InteractionActionStatus.RUNNING
             }
 
             PlayFootballState.FINISHING -> {
                 finishTimerSeconds += context.deltaTime
-                if (finishTimerSeconds >= config.finishDelaySeconds) {
+                val retreatTarget = postKickRetreatTarget
+                if (retreatTarget != null) {
+                    val retreatDirection = horizontalDirection(subjectTransform.position, retreatTarget)
+                    if (retreatDirection != null) {
+                        faceDirection(subjectTransform, retreatDirection, context.deltaTime)
+                    }
+                    moveSubjectTowards(subject, subjectTransform, retreatTarget, context.deltaTime)
+                    if (distance(subjectTransform.position, retreatTarget) <= config.arrivalRadius) {
+                        postKickRetreatTarget = null
+                    }
+                }
+                if (
+                    finishTimerSeconds >= config.finishDelaySeconds &&
+                    postKickRetreatTarget == null
+                ) {
+                    debugSample(
+                        state = state,
+                        subject = subject,
+                        subjectTransform = subjectTransform,
+                        footballTransform = footballTransform,
+                        status = "cleanup"
+                    )
                     cleanupSubjectMotion(subject)
                     InteractionActionStatus.COMPLETED
                 } else {
@@ -131,6 +202,16 @@ private class PlayFootballActionInstance(
     override fun cancel() {
         activeSubject?.let(::cleanupSubjectMotion)
         Log.d(TAG, "Cancel play-football action")
+    }
+
+    private fun resolveSubject(context: SceneUpdateContext): com.pico.spatial.core.ecs.Entity? {
+        return activeSubject ?: InteractionEntityResolver.findActor(context.scene, request.subjectId)
+            ?.also { activeSubject = it }
+    }
+
+    private fun resolveFootball(context: SceneUpdateContext): com.pico.spatial.core.ecs.Entity? {
+        return activeFootball ?: InteractionEntityResolver.findObject(context.scene, footballObjectId)
+            ?.also { activeFootball = it }
     }
 
     private fun moveSubjectTowards(
@@ -192,45 +273,99 @@ private class PlayFootballActionInstance(
         subject.components[PhysicsForceComponent::class.java]?.force = Vector3.ZERO
     }
 
+    private fun buildPostKickRetreatTarget(footballPosition: Vector3, kickDirection: Vector3): Vector3 {
+        return Vector3(
+            footballPosition.x - kickDirection.x * config.postKickRestoreDistance,
+            footballPosition.y + config.hoverHeightAboveBall,
+            footballPosition.z - kickDirection.z * config.postKickRestoreDistance
+        )
+    }
+
     private fun prepareSubjectForDirectMotion(subject: com.pico.spatial.core.ecs.Entity) {
-        val rigidBody = subject.components[RigidBodyComponent::class.java] ?: return
-        if (previousSubjectRigidBodyMode == null) {
-            previousSubjectRigidBodyMode = rigidBody.rigidBodyMode
-        }
-        rigidBody.rigidBodyMode = RigidBodyMode.KINEMATIC
-        rigidBody.isAffectedByGravity = false
-        subject.components[PhysicsForceComponent::class.java]?.force = Vector3.ZERO
-        subject.components[PhysicsVelocityComponent::class.java]?.linearVelocity = Vector3.ZERO
+        subjectMotion.prepare(subject)
     }
 
     private fun cleanupSubjectMotion(subject: com.pico.spatial.core.ecs.Entity) {
         subject.components.remove(FairyActionLockComponent::class.java)
-        subject.components[PhysicsForceComponent::class.java]?.force = Vector3.ZERO
-        subject.components[PhysicsVelocityComponent::class.java]?.linearVelocity = Vector3.ZERO
-        subject.components[RigidBodyComponent::class.java]?.let { rigidBody ->
-            rigidBody.rigidBodyMode = previousSubjectRigidBodyMode ?: RigidBodyMode.DYNAMIC
-            rigidBody.isAffectedByGravity = false
-        }
-        previousSubjectRigidBodyMode = null
+        subjectMotion.restore(subject)
+        postKickRetreatTarget = null
         activeSubject = null
+        activeFootball = null
     }
+
+    // #region debug-point A:play-football-state
+    private fun debugSample(
+        state: PlayFootballState,
+        subject: com.pico.spatial.core.ecs.Entity,
+        subjectTransform: TransformComponent,
+        footballTransform: TransformComponent,
+        status: String
+    ) {
+        if (status == "tick" && elapsedSeconds - debugLastSampleSeconds < 0.5f) return
+        if (status == "tick") debugLastSampleSeconds = elapsedSeconds
+        val rigidBody = subject.components[RigidBodyComponent::class.java]
+        val collision = subject.components[com.pico.spatial.core.ecs.CollisionComponent::class.java]
+        val velocity = subject.components[PhysicsVelocityComponent::class.java]
+        debugPost(
+            hypothesisId = "A",
+            location = "PlayFootballActionController",
+            msg = "[DEBUG] play-football $status",
+            data = mapOf(
+                "state" to state.name,
+                "elapsed" to elapsedSeconds,
+                "finishTimer" to finishTimerSeconds,
+                "subjectX" to subjectTransform.position.x,
+                "subjectY" to subjectTransform.position.y,
+                "subjectZ" to subjectTransform.position.z,
+                "footballX" to footballTransform.position.x,
+                "footballY" to footballTransform.position.y,
+                "footballZ" to footballTransform.position.z,
+                "distance" to distance(subjectTransform.position, footballTransform.position),
+                "retreatSet" to (postKickRetreatTarget != null),
+                "retreatX" to (postKickRetreatTarget?.x ?: 0f),
+                "retreatY" to (postKickRetreatTarget?.y ?: 0f),
+                "retreatZ" to (postKickRetreatTarget?.z ?: 0f),
+                "rigidBodyMode" to (rigidBody?.rigidBodyMode?.name ?: "none"),
+                "collisionMode" to (collision?.collisionResponseMode?.name ?: "none"),
+                "linearVelocity" to (velocity?.linearVelocity?.let { distance(Vector3.ZERO, it) } ?: -1f),
+                "angularVelocity" to (velocity?.angularVelocity?.let { distance(Vector3.ZERO, it) } ?: -1f)
+            )
+        )
+    }
+    // #endregion
 
     private companion object {
         private const val TAG = "PlayFootballAction"
         private const val DEFAULT_FOOTBALL_OBJECT_ID = "football"
         private const val MIN_TARGET_Y = -0.5f
+        private const val MIN_SAFE_APPROACH_DISTANCE = 0.22f
+        private const val DEBUG_URL = "http://10.71.200.105:7777/event"
     }
 }
+
+// #region debug-point A:reporter
+private fun debugPost(hypothesisId: String, location: String, msg: String, data: Map<String, Any>) {
+    com.example.matefairy01.debug.DebugRuntimeDependencies.reporter.post(
+        com.example.matefairy01.debug.DebugEvent(
+            hypothesisId = hypothesisId,
+            location = location,
+            message = msg,
+            data = data
+        )
+    )
+}
+// #endregion
 
 private enum class PlayFootballState {
     DETECTING,
     APPROACHING,
+    PLAYING_KICK_ANIMATION,
     KICKING,
     FINISHING
 }
 
 private data class PlayFootballConfig(
-    val approachDistance: Float = 0.32f,
+    val approachDistance: Float = 0.22f,
     val arrivalRadius: Float = 0.18f,
     val hoverHeightAboveBall: Float = 0.28f,
     val flySpeed: Float = 1.2f,
@@ -244,7 +379,8 @@ private data class PlayFootballConfig(
     val maxKickFanAngleDegrees: Float = 25f,
     val kickYawOffsetDegrees: Float = 0f,
     val finishDelaySeconds: Float = 0.35f,
-    val maxActionSeconds: Float = 4.5f,
+    val postKickRestoreDistance: Float = 0.52f,
+    val maxActionSeconds: Float = 6.5f,
     val activationHorizontalDistance: Float = PlayFootballPreconditions.MAX_HORIZONTAL_DISTANCE_METERS
 ) {
     companion object {

@@ -21,11 +21,11 @@ object ResourcePhysicsConfigurator {
             ball = football,
             config = BallPhysicsConfig(
                 colliderRadius = 0.11f,
-                staticFriction = 0.8f,
-                dynamicFriction = 0.8f,
-                restitution = 0.85f,
-                linearDamping = 0.2f,
-                angularDamping = 0.2f
+                staticFriction = 0.55f,
+                dynamicFriction = 0.45f,
+                restitution = 0.75f,
+                linearDamping = 0.12f,
+                angularDamping = 0.16f
             )
         )
     }
@@ -37,7 +37,7 @@ object ResourcePhysicsConfigurator {
                 colliderRadius = 0.12f,
                 staticFriction = 0.7f,
                 dynamicFriction = 0.7f,
-                restitution = 0.9f,
+                restitution = 0.65f,
                 linearDamping = 0.18f,
                 angularDamping = 0.18f
             )

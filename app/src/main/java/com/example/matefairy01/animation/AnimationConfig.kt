@@ -16,15 +16,19 @@ enum class AnimationType(val priority: AnimationPriority) {
 /**
  * 动画配置映射
  *
- * 根据模型文件 (pico_robot_animated.glb) 中的轨道索引映射：
+ * 根据模型文件 (pico_robot_animated_new.glb) 中的有效轨道索引映射：
  * 0: 01_idle
- * 1: 02_jump
- * 2: 03_look_around
- * 3: 04_walk_forward
- * 4: 05_wave
- * 5: 06_mad_action
- * 6: Action (无用轨道，忽略)
- * 7: Action.001 (无用轨道，忽略)
+ * 10: 02_jump
+ * 14: 03_look_around
+ * 18: 04_walk_forward
+ * 22: 05_wave
+ * 26: 06_mad_action
+ * 30: 07_happy_action
+ * 34: 08_dance_action
+ * 38: 09_sad_action
+ * 40: 10_pick_action
+ * 42: 11_disco_dancing_action
+ * 44: 12_kick_action
  */
 enum class FairyAnimation(
     val trackIndex: Int, 
@@ -34,23 +38,28 @@ enum class FairyAnimation(
     val intent: String? = null // 用于自动注入到 LLM Prompt 中的意图名称
 ) {
     // --- 情绪动画 (EMOTION) ---
-    MAD_ACTION(5, "Mad Action", AnimationType.EMOTION_REACTION, 3000L, "angry"),
-    HAPPY_ACTION(6, "Happy Action", AnimationType.EMOTION_REACTION, 3000L, "happy"),
+    MAD_ACTION(26, "Mad Action", AnimationType.EMOTION_REACTION, 3000L, "angry"),
+    HAPPY_ACTION(30, "Happy Action", AnimationType.EMOTION_REACTION, 3000L, "happy"),
+    SAD_ACTION(38, "Sad Action", AnimationType.EMOTION_REACTION, 3000L, "sad"),
 
     // --- 指令动画 (ACTION) ---
-    // 目前指令动画暂未就绪，留空。后期直接在这里增加即可。
-    DANCE_ACTION(7, "Dance Action", AnimationType.NON_TASK_ACTION, 4000L, "dance"),
+    DANCE_ACTION(34, "Dance Action", AnimationType.NON_TASK_ACTION, 4000L, "dance"),
+    PICK_ACTION(40, "Pick Action", AnimationType.NON_TASK_ACTION, 2000L),
+    DISCO_DANCING_ACTION(42, "Disco Dancing Action", AnimationType.NON_TASK_ACTION, 4000L, "disco"),
+    KICK_ACTION(44, "Kick Action", AnimationType.NON_TASK_ACTION, 2000L),
 
     // --- 常驻动画 (BASE) ---
     // 这里全是原有的老动画，均作为兜底的基础表现
     STANDBY_MODE(0, "Standby", AnimationType.BASE_IDLE, 3000L),
-    SPIN_LEAP(1, "Spin Leap", AnimationType.BASE_MOVING, 2000L),
-    CURIOUS_LOOK(2, "Curious Look", AnimationType.BASE_IDLE, 2500L),
-    TURBO_DASH(3, "Turbo Dash", AnimationType.BASE_MOVING, 1500L),
-    HELLO_WAVE(4, "Hello Wave", AnimationType.BASE_IDLE, 2000L)
+    SPIN_LEAP(10, "Spin Leap", AnimationType.BASE_MOVING, 2000L),
+    CURIOUS_LOOK(14, "Curious Look", AnimationType.BASE_IDLE, 2500L),
+    TURBO_DASH(18, "Turbo Dash", AnimationType.BASE_MOVING, 1500L),
+    HELLO_WAVE(22, "Hello Wave", AnimationType.BASE_IDLE, 2000L)
 }
 
 object AnimationConfig {
+    const val fairyModelAssetUri = "asset://pico_robot_animated_new.glb"
+
     val idleAnimations = FairyAnimation.values().filter { it.type == AnimationType.BASE_IDLE }
     val movingAnimations = FairyAnimation.values().filter { it.type == AnimationType.BASE_MOVING }
 
@@ -64,8 +73,12 @@ object AnimationConfig {
         "play-football",
         "start-boombox",
         "stop-boombox",
+        // Dialogue-triggered squeeze-rubber-duck is enabled; random and direct gesture entry
+        // points remain disabled elsewhere for controlled testing.
         "squeeze-rubber-duck",
-        "put-down-rubber-duck"
+        "put-down-rubber-duck",
+        "stay-on-chair",
+        "leave-chair"
     ) +
         FairyAnimation.values().filter { it.type == AnimationType.NON_TASK_ACTION }.mapNotNull { it.intent }).distinct()
 
@@ -76,4 +89,6 @@ object AnimationConfig {
     fun getAnimationByAction(action: String): FairyAnimation? {
         return FairyAnimation.values().find { it.type == AnimationType.NON_TASK_ACTION && it.intent == action }
     }
+
+    val playFootballKickAnimation = FairyAnimation.KICK_ACTION
 }

@@ -249,6 +249,7 @@ class DeepSeekLLMProvider(
     private fun buildToolEnabledSystemPrompt(basePrompt: String): String {
         val emotionsStr = com.example.matefairy01.animation.AnimationConfig.supportedEmotions.joinToString("|")
         val actionsStr = com.example.matefairy01.animation.AnimationConfig.supportedActions.joinToString("|")
+        val runtimeToolIntentGuide = buildRuntimeToolIntentGuide(actionsStr)
 
         return """
             $basePrompt
@@ -256,6 +257,14 @@ class DeepSeekLLMProvider(
             【工具使用】
             你可以使用外部工具来获取信息或执行操作。需要时直接发起 tool_calls，
             不需要事先询问用户。工具结果会以 role=tool 的消息返回给你。
+
+            【联网搜索规则】
+            当用户询问实时信息、新闻、天气、价格、版本、近期事件、网页内容，或你对事实不确定时，
+            必须优先调用可用的联网搜索/网页抓取类 MCP 工具获取依据，再给最终 JSON。
+            如果搜索工具返回了多个来源，请综合最相关的结果，用 1-2 句中文回答；不要编造搜索结果中没有的信息。
+            如果没有可用搜索工具或工具调用失败，请诚实说明“我现在没有查到可靠结果”，不要假装已经联网。
+
+            $runtimeToolIntentGuide
 
             【情绪意图(emotion)与回复(reply_text)的统一规则】
             注意：为了避免表现割裂，精灵的语言回复（`reply_text`）必须与 `emotion` 的状态严格保持一致！
@@ -285,8 +294,10 @@ class DeepSeekLLMProvider(
             7. 如果用户要求“关闭音响”“停止音乐”“关掉 boombox”，action_intent 必须输出 "stop-boombox"。
             8. 如果用户要求“捏小黄鸭”“挤小黄鸭”“让鸭子叫”“rubber duck”，action_intent 必须输出 "squeeze-rubber-duck"。
             9. 如果用户要求“放下小黄鸭”“放下鸭子”，action_intent 必须输出 "put-down-rubber-duck"。
-            10. 如果用户同时表达辱骂、贬低、攻击等负面冒犯，emotion 必须输出 "angry"，action_intent 仍可识别为对应 action，程序侧会优先执行负面情绪动画。
-            11. 不要输出 JSON 对象之外的任何字符。
+            10. 如果用户要求“去椅子上待着”“坐到椅子上”“飞到椅子上休息”，action_intent 必须输出 "stay-on-chair"。
+            11. 如果用户要求“离开椅子”“从椅子上下来”“回来/跟着我”，action_intent 必须输出 "leave-chair"。
+            12. 如果用户同时表达辱骂、贬低、攻击等负面冒犯，emotion 必须输出 "angry"，action_intent 仍可识别为对应 action，程序侧会优先执行负面情绪动画。
+            13. 不要输出 JSON 对象之外的任何字符。
         """.trimIndent()
     }
 
@@ -344,6 +355,7 @@ class DeepSeekLLMProvider(
     private fun buildStructuredSystemPrompt(basePrompt: String): String {
         val emotionsStr = com.example.matefairy01.animation.AnimationConfig.supportedEmotions.joinToString("|")
         val actionsStr = com.example.matefairy01.animation.AnimationConfig.supportedActions.joinToString("|")
+        val runtimeToolIntentGuide = buildRuntimeToolIntentGuide(actionsStr)
 
         return """
             $basePrompt
@@ -360,6 +372,8 @@ class DeepSeekLLMProvider(
             5. 所有 key 和字符串值必须使用双引号。
             6. 不允许遗漏字段，不允许新增未定义字段。
             7. 即使你不确定如何回答，也必须返回一个合法 JSON 对象，不能输出普通文本。
+
+            $runtimeToolIntentGuide
 
             【固定 JSON 结构】
             {
@@ -380,7 +394,9 @@ class DeepSeekLLMProvider(
             8. 如果用户要求“关闭音响”“停止音乐”“关掉 boombox”，action_intent 必须输出 "stop-boombox"。
             9. 如果用户要求“捏小黄鸭”“挤小黄鸭”“让鸭子叫”“rubber duck”，action_intent 必须输出 "squeeze-rubber-duck"。
             10. 如果用户要求“放下小黄鸭”“放下鸭子”，action_intent 必须输出 "put-down-rubber-duck"。
-            11. 如果用户同时表达辱骂、贬低、攻击等负面冒犯，emotion 必须输出 "angry"，action_intent 仍可识别为对应 action，程序侧会优先执行负面情绪动画。
+            11. 如果用户要求“去椅子上待着”“坐到椅子上”“飞到椅子上休息”，action_intent 必须输出 "stay-on-chair"。
+            12. 如果用户要求“离开椅子”“从椅子上下来”“回来/跟着我”，action_intent 必须输出 "leave-chair"。
+            13. 如果用户同时表达辱骂、贬低、攻击等负面冒犯，emotion 必须输出 "angry"，action_intent 仍可识别为对应 action，程序侧会优先执行负面情绪动画。
 
             【情绪意图(emotion)与回复(reply_text)的统一规则】
             注意：为了避免表现割裂，精灵的语言回复（`reply_text`）必须与 `emotion` 的状态严格保持一致！
@@ -408,6 +424,45 @@ class DeepSeekLLMProvider(
             3. 枚举值是否合法；
             4. 是否可被标准 JSON 解析器直接解析。
             如果任一检查失败，请在内部重生成，直到满足协议后再输出。
+        """.trimIndent()
+    }
+
+    private fun buildRuntimeToolIntentGuide(actionsStr: String): String {
+        return """
+            【工程可调用工具与 intent 路由指南（极重要）】
+            这里的“工具”指 MateFairy 工程运行时可执行的内部能力，不等同于外部 tool_calls。
+            你不能直接执行这些内部工具；你必须通过最终 JSON 的 `action_intent` 字段告诉程序要调用哪个工具。
+
+            强制原则：
+            1. `reply_text` 只是说给玩家听的话，绝不会触发工程动作。
+            2. `action_intent` 才是程序真正执行动作的开关；如果你嘴上说“我去坐”“我去踢球”“我去打开音响”，但 `action_intent` 输出 "none"，程序就不会执行任何动作。
+            3. 只要识别到玩家明确要求精灵执行某个可调用工具，你必须输出对应的 `action_intent`，不能只在 `reply_text` 中承诺。
+            4. 如果一句话同时包含闲聊和动作命令，动作命令优先，必须保留对应 `action_intent`。
+            5. 如果一句话同时包含多个动作命令，优先选择更具体、更有场景交互含义的任务型工具，例如踢球、椅子驻留、音响、小黄鸭。
+            6. `action_intent` 只能从当前工程支持列表中选择：$actionsStr。
+
+            【intent 与工程工具调用映射表】
+            - "none"：不调用任何动作工具。仅用于纯闲聊、回答问题、没有明确让精灵执行动作的语境。
+            - "play-football"：调用“踢足球”工具。用户说踢球、玩足球、去碰球、kick/play football，或要求精灵和足球互动时必须输出。
+            - "start-boombox"：调用“打开音响/播放音乐”工具。用户说打开音响、启动音响、播放音乐、打开 boombox 时必须输出。
+            - "stop-boombox"：调用“关闭音响/停止音乐”工具。用户说关闭音响、停止音乐、关掉 boombox 时必须输出。
+            - "squeeze-rubber-duck"：调用“捏小黄鸭/让鸭子叫”工具。用户说捏鸭子、挤小黄鸭、让鸭子叫、rubber duck 时必须输出。
+            - "put-down-rubber-duck"：调用“放下小黄鸭”工具。用户说放下鸭子、把小黄鸭放下来时必须输出。
+            - "stay-on-chair"：调用“现实语义椅子驻留”工具。用户说去椅子上待着、坐到椅子上、飞到椅子上休息、去椅子上坐一会儿、找把椅子坐下、到椅子那边待着时必须输出。这个工具会让精灵定位现实场景中的椅子并飞过去进入 idle 驻留态。
+            - "leave-chair"：调用“离开椅子/解除椅子驻留”工具。用户说离开椅子、从椅子上下来、别坐了、回来、跟着我、过来时必须输出。
+            - "dance"：调用“跳舞动画”工具。用户明确要求跳舞、dance 时输出。
+            - "disco"：调用“迪斯科舞蹈动画”工具。用户明确要求迪斯科、disco dancing 时输出。
+            - "fetch_ball"：保留意图。只有当用户明确要求取球/把球拿来且没有更具体的踢球语境时才输出；如果语义是踢球或玩足球，优先输出 "play-football"。
+
+            【emotion 工具说明】
+            - `emotion` 控制精灵情绪表现，不能替代 `action_intent`。
+            - 用户辱骂、责备、攻击、嫌弃时，`emotion` 必须输出 "angry"。
+            - 用户夸奖、感谢、语气开心时，`emotion` 优先输出 "happy"。
+            - 用户悲伤、难过时，`emotion` 输出 "sad"。
+            - 普通指令如“去椅子上待着”通常 `emotion` 输出 "neutral"，同时 `action_intent` 必须输出 "stay-on-chair"。
+
+            【输出前强制自检】
+            在输出最终 JSON 前，你必须检查：如果 `reply_text` 中出现“我去/我来/我帮你/我马上/我这就/好的我去”等承诺执行动作的表达，那么 `action_intent` 绝不能是 "none"，必须与承诺的动作一致。
         """.trimIndent()
     }
 
