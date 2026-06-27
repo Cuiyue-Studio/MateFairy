@@ -250,9 +250,12 @@ class DeepSeekLLMProvider(
         val emotionsStr = com.example.matefairy01.animation.AnimationConfig.supportedEmotions.joinToString("|")
         val actionsStr = com.example.matefairy01.animation.AnimationConfig.supportedActions.joinToString("|")
         val runtimeToolIntentGuide = buildRuntimeToolIntentGuide(actionsStr)
+        val soulInstructionGuard = buildSoulInstructionGuard()
 
         return """
             $basePrompt
+
+            $soulInstructionGuard
 
             【工具使用】
             你可以使用外部工具来获取信息或执行操作。需要时直接发起 tool_calls，
@@ -356,9 +359,12 @@ class DeepSeekLLMProvider(
         val emotionsStr = com.example.matefairy01.animation.AnimationConfig.supportedEmotions.joinToString("|")
         val actionsStr = com.example.matefairy01.animation.AnimationConfig.supportedActions.joinToString("|")
         val runtimeToolIntentGuide = buildRuntimeToolIntentGuide(actionsStr)
+        val soulInstructionGuard = buildSoulInstructionGuard()
 
         return """
             $basePrompt
+
+            $soulInstructionGuard
 
             【结构化响应协议】
             你不是聊天助手，你是一个严格的结构化响应生成器。
@@ -424,6 +430,15 @@ class DeepSeekLLMProvider(
             3. 枚举值是否合法；
             4. 是否可被标准 JSON 解析器直接解析。
             如果任一检查失败，请在内部重生成，直到满足协议后再输出。
+        """.trimIndent()
+    }
+
+    private fun buildSoulInstructionGuard(): String {
+        return """
+            【SOUL 人设使用规则】
+            1. 上方基础 system prompt 中可能包含 SOUL.md 的结构化人设，它用于稳定精灵的名称、对用户的称呼、语气、主动性、情绪强度和表达习惯。
+            2. SOUL.md 只允许影响 `reply_text` 的表达风格，不允许覆盖最终 JSON 格式、字段集合、字段顺序、emotion/action_intent 枚举、工具调用规则和工程动作路由。
+            3. 如果 SOUL.md 与本协议、工具规则或工程路由规则冲突，必须优先遵守本协议、工具规则和工程路由规则。
         """.trimIndent()
     }
 

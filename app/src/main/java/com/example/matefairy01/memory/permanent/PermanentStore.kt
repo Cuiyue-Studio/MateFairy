@@ -2,6 +2,8 @@ package com.example.matefairy01.memory.permanent
 
 import android.content.Context
 import android.util.Log
+import com.example.matefairy01.persona.FairySoulProfile
+import com.example.matefairy01.persona.FairySoulProfileMarkdownCodec
 import java.io.File
 
 /**
@@ -36,6 +38,17 @@ class PermanentStore(
     fun readSoul(): String = readSafe(MdTemplates.FILE_SOUL)
     fun readUser(): String = readSafe(MdTemplates.FILE_USER)
     fun readMemory(): String = readSafe(MdTemplates.FILE_MEMORY)
+    fun readSoulProfile(): FairySoulProfile =
+        FairySoulProfileMarkdownCodec.decode(readSoul())
+
+    /** 写入精灵结构化人设，自动备份 + 原子写。Dream 流程不调用此方法。 */
+    fun writeSoulProfile(profile: FairySoulProfile) {
+        val content = FairySoulProfileMarkdownCodec.toMarkdown(
+            profile = profile,
+            previousMarkdown = readSoul()
+        )
+        writeSafe(MdTemplates.FILE_SOUL, content)
+    }
 
     /** 写入用户画像，自动备份 + 原子写 */
     fun writeUser(content: String) = writeSafe(MdTemplates.FILE_USER, content)
@@ -43,7 +56,7 @@ class PermanentStore(
     /** 写入叙事记忆，自动备份 + 原子写 */
     fun writeMemory(content: String) = writeSafe(MdTemplates.FILE_MEMORY, content)
 
-    /** SOUL 由开发者 / 用户编辑，不开放程序写入 API（Dream 流程不应改它） */
+    /** SOUL 只允许用户设置面板 / 开发者编辑；Dream 流程不应改它。 */
 
     fun memoryDirPath(): String = memoryDir.absolutePath
 

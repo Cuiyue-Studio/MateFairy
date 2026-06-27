@@ -14,6 +14,7 @@ import com.example.matefairy01.input.VoiceInputProvider
 object SharedUIManager {
     lateinit var textInputProvider: TextInputProvider
     lateinit var voiceInputProvider: VoiceInputProvider
+    lateinit var fairySettingsProvider: FairySettingsProvider
 
     // 控制用户级 UI 窗口的显示状态
     var isUserUIWindowOpen by mutableStateOf(false)
@@ -21,5 +22,6 @@ object SharedUIManager {
     fun initialize(context: Context) {
         textInputProvider = TextInputProvider()
         voiceInputProvider = VoiceInputProvider(context)
+        fairySettingsProvider = FairySettingsProvider()
     }
 }

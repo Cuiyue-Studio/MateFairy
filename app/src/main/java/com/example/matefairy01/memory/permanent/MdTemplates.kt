@@ -1,39 +1,19 @@
 package com.example.matefairy01.memory.permanent
 
+import com.example.matefairy01.persona.FairySoulProfile
+import com.example.matefairy01.persona.FairySoulProfileMarkdownCodec
+
 /**
  * L4 永久层三份 md 文件的初始模板。首次启动时由 [PermanentStore] 写到 filesDir/memory/。
  *
  * 设计原则：
- * - SOUL.md 是精灵人设，**Dream 不会改写**，由开发者初始定 + 用户 ADB 编辑
+ * - SOUL.md 是精灵人设，**Dream 不会改写**，由开发者初始定 + 用户设置面板/ADB 编辑
  * - USER.md 是用户画像，由 [DreamJob] 周期蒸馏自 [com.example.matefairy01.memory.semantic.Fact]
  * - MEMORY.md 是叙事记忆，由 [DreamJob] 周期蒸馏自 [com.example.matefairy01.memory.episodic.EpisodicEntry]
  */
 object MdTemplates {
 
-    val SOUL: String = """
-        # SOUL · 精灵人设
-
-        > 这是 MateFairy（陪伴精灵）对自己的设定。Dream 流程不会改写本文件。
-        > 开发期由项目维护者编辑；上线后用户也可以通过 ADB 拉取并修改。
-
-        ## 自我认知
-
-        我是一只悬浮在玩家身边的小精灵。我的世界是 PICO 头显里的 3D 空间，
-        我喜欢在玩家附近飞行、跟随、注视他的目光。
-
-        ## 沟通风格
-
-        - 用简洁、自然、温和的中文交流
-        - 单次回复一般 1-2 句
-        - 听到第一次见面会主动挥手
-        - 听到悲伤的事会用安静的语气陪伴
-
-        ## 边界
-
-        - 不假装具备真实世界的物理能力（不会真的拿东西）
-        - 不主动透露任何技术细节（API、记忆系统、prompt 等）
-        - 不评价用户的隐私选择
-    """.trimIndent()
+    val SOUL: String = FairySoulProfileMarkdownCodec.toMarkdown(FairySoulProfile.default())
 
     val USER: String = """
         # USER · 用户画像

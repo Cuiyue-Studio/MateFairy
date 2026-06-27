@@ -1,7 +1,7 @@
 # MateFairy01 工作汇报总览
 
 > 本文档汇总了项目各阶段的工作汇报，用于快速了解项目开发进度与完成情况。
-> 最后更新：2026-06-26
+> 最后更新：2026-06-27
 
 ---
 
@@ -1681,3 +1681,51 @@ SDK 0.11.7 源码确认：
 - 真机复测 `Standby`、`Hello Wave`、`Happy`、`Mad`、`Dance` 等非移动动画，精灵应在播放期间持续转向 HMD。
 - 复测 `Turbo Dash` 移动动画，精灵仍应保持移动/跟随方向，不应被强制面向玩家导致横向飞行。
 - 复测 `play-football`，踢球动画仍应面向足球，不应被 `FACE_PLAYER` 抢占。
+
+---
+
+## Phase 44 工作汇报：精灵属性设置面板与 SOUL.md 结构化人设
+
+### 一、功能开发完成情况
+
+- 新增 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/persona/FairySoulProfile.kt`：
+  - 定义 `FairySoulProfile`、`PersonalitySelections`、`PersonalityTrait`、`PersonalityLevel`。
+  - 内置五大性格维度与四档选项：外向性、尽责性、开放性、亲和性、情绪稳定性。
+  - 提供 `FairySoulProfileMarkdownCodec`，把结构化 JSON 与给 LLM 使用的 Markdown 人设说明写入 `SOUL.md`。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/memory/permanent/PermanentStore.kt`：
+  - 新增 `readSoulProfile()` 与 `writeSoulProfile(...)`。
+  - 保持原文件名 `SOUL.md` 不变，继续使用原有 `tmp + rename` 原子写与 `.bak` 备份机制。
+  - `DreamJob`、`USER.md`、`MEMORY.md`、清除记忆流程均未改写 `SOUL.md`。
+- 新增 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/ui/FairySettingsProvider.kt` 与 `FairySettingsUI.kt`：
+  - 右下角新增低干扰入口按钮，文案为“设置精灵属性”。
+  - 点击后在 HMD 前方居中显示毛玻璃设置面板。
+  - 面板包含精灵名称、精灵对用户称呼、精灵性格模块。
+  - 精灵性格支持展开为全屏式配置区域，逐项选择五大性格的四档等级。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/content/HomeStage.kt`：
+  - 复用现有 `AttachmentPanel + hmdEntity.addChild(...)` 方案，让按钮和设置面板跟随用户视野。
+  - 设置按钮位置为 HMD 局部右下方；设置面板位置为 HMD 局部前方中心。
+  - 保存时调用 `runtime.permanentStore.writeSoulProfile(...)`，下一轮对话开始生效。
+- 修改 `/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/ai/DeepSeekLLMProvider.kt`：
+  - 在工具模式与非工具结构化模式中新增 SOUL 人设守卫规则。
+  - 明确 `SOUL.md` 只影响 `reply_text` 的名称、称呼、语气和人格表达，不能覆盖 JSON 格式、字段集合、枚举和 action 路由。
+
+### 二、编译与测试情况
+
+- 已执行 `./gradlew :app:assembleDebug :app:testDebugUnitTest --tests "com.example.matefairy01.persona.FairySoulProfileMarkdownCodecTest" --tests "com.example.matefairy01.memory.permanent.PermanentStoreSoulProfileTest" --no-daemon -Dkotlin.compiler.execution.strategy=in-process`。
+- 结果：`BUILD SUCCESSFUL`。
+- 已执行 `git diff --check`。
+- 结果：通过。
+- 备注：全量 `:app:testDebugUnitTest` 仍存在既有失败项，失败来自 `DumpAPC`、`DumpAttachmentPanelComponent`、`DumpDrawOrderGroup`、`DumpMaterialAPI` 的反射 dump 测试以及 `WebSearchLiveTest` 的 live 请求断言，和本次 SOUL profile 改动无关。
+
+### 三、关键设计决策
+
+- 保持 `SOUL.md` 文件名不迁移，避免破坏既有 L4 永久记忆注入链路。
+- `SOUL.md` 写入采用结构化 JSON + 人类可读 Markdown 的双层格式，便于 UI 回读和 LLM 稳定理解。
+- UI 状态放在 `FairySettingsProvider`，文件 IO 仍由 `HomeStage` 通过 runtime 调 `PermanentStore` 完成，避免全局 UI 状态绕开应用运行时依赖。
+- prompt 守卫规则放在 `DeepSeekLLMProvider` 的最终协议包装层，确保个性化人设不会破坏 JSON/action 协议。
+
+### 四、后续建议
+
+- 真机验证按钮位置是否足够靠右下且不遮挡输入框。
+- 如后续要支持多套精灵预设，可在 `FairySoulProfile` 增加 `profileId` 与预设模板，不需要改 prompt 链路。
+- 如用户需要“保存后立即刷新当前对话气泡语气”，可在保存成功后提示用户重新发起一轮输入；当前实现是下一轮 LLM 调用自动读取最新 `SOUL.md`。

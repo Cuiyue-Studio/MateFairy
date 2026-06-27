@@ -1,7 +1,7 @@
 # MateFairy01 技术文档总览
 
 > 本文档汇总了项目各阶段的技术交接与架构设计文档，用于帮助后续开发人员或 Agent 快速理解项目技术细节与接口约定。
-> 最后更新：2026-06-26
+> 最后更新：2026-06-27
 
 ---
 
@@ -2844,3 +2844,81 @@ private fun applyFairyYaw(
 - 验证命令：`./gradlew :app:compileDebugKotlin --rerun-tasks --no-daemon -Dkotlin.compiler.execution.strategy=in-process`
 - 结果：`BUILD SUCCESSFUL`
 - 已知无关日志：Kotlin daemon 权限失败后 fallback 到无 daemon 编译成功；`FairyAudioModule.kt` 存在既有条件恒 false warning。
+
+---
+
+## Phase 44 技术交接：SOUL.md 结构化人设与精灵属性设置 UI
+
+### 1. 阶段概述
+
+本阶段新增用户可编辑的精灵属性设置能力。核心目标是让用户通过空间 UI 修改精灵名称、精灵对用户的称呼以及五大性格属性，并把结果以规范结构写入现有 `SOUL.md`。主对话链路仍通过 `ContextMemorySystem.buildPromptMessages(...)` 每轮读取 `PermanentStore.readSoul()` 注入 system prompt，因此本阶段没有改变 LLM 调用入口和记忆召回顺序。
+
+### 2. 核心架构与类说明
+
+- `FairySoulProfile`
+  - 定义位置：`/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/persona/FairySoulProfile.kt`
+  - 字段：
+    - `fairyName`：精灵名称。
+    - `userAddress`：精灵对用户的称呼。
+    - `personality`：五大性格选择，类型为 `PersonalitySelections`。
+  - `normalized()` 会裁剪空白并对空字段回退默认值。
+  - `toPromptMarkdown()` 会生成可直接注入 LLM 的人设说明。
+- `FairyPersonalityCatalog`
+  - 定义五大性格维度和每个维度的四档选项。
+  - UI 展示和 `SOUL.md` prompt 文本都使用同一份 catalog，避免文案分叉。
+- `FairySoulProfileMarkdownCodec`
+  - `toMarkdown(profile, previousMarkdown)`：生成 `SOUL.md` 内容。
+  - `decode(markdown)`：从 `SOUL.md` 的 `<!-- matefairy:soul-profile:v1 -->` 标记块回读结构化 profile。
+  - 如果旧版 `SOUL.md` 没有结构化块，会回退默认 profile；保存时会把旧内容保留在结构化块之后，结构化块优先级更高。
+- `PermanentStore`
+  - 新增 `readSoulProfile()` 与 `writeSoulProfile(...)`。
+  - 仍写入 `MdTemplates.FILE_SOUL`，即 `SOUL.md`。
+  - 继续复用原有 `writeSafe(...)` 的备份和原子写策略。
+- `FairySettingsProvider`
+  - 定义位置：`/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/ui/FairySettingsProvider.kt`
+  - 只保存 UI 状态：当前 profile、草稿 profile、面板显隐、性格展开状态、保存状态。
+  - 不做文件 IO，避免破坏 runtime 依赖边界。
+- `FairySettingsUI`
+  - 定义位置：`/Users/bytedance/MateFairy/app/src/main/java/com/example/matefairy01/ui/FairySettingsUI.kt`
+  - `SettingsEntryButton(...)`：右下角入口按钮。
+  - `SettingsPanel(...)`：毛玻璃设置面板。
+  - `PersonalityExpandedContent(...)`：性格模块展开后占满面板主体区域。
+- `HomeStage`
+  - 通过 `LaunchedEffect(runtime)` 从 `runtime.permanentStore.readSoulProfile()` 初始化设置状态。
+  - 通过 `AttachmentPanel(id = "fairy_settings_button")` 和 `AttachmentPanel(id = "fairy_settings_panel")` 渲染空间 UI。
+  - 在 `SpatialView.update` 中把两个 attachment entity 挂到 `hmdEntity` 下，使用 HMD 局部坐标固定在用户视野前方。
+- `DeepSeekLLMProvider`
+  - 新增 `buildSoulInstructionGuard()`。
+  - 工具模式和非工具结构化模式都会插入该规则，确保 `SOUL.md` 不能覆盖 JSON 协议和 action intent 路由。
+
+### 3. 运行流程
+
+1. App 启动后 `PermanentStore.ensureInitialized()` 保证 `SOUL.md` 存在。
+2. `HomeStage` 首次进入时读取 `readSoulProfile()`，写入 `FairySettingsProvider.currentProfile`。
+3. 用户点击 HMD 右下角“设置精灵属性”按钮。
+4. `FairySettingsProvider.openPanel()` 把当前 profile 复制到草稿。
+5. 用户修改名称、称呼或五大性格等级。
+6. 用户点击保存，`HomeStage.saveFairySoulProfile(...)` 在 IO 线程调用 `PermanentStore.writeSoulProfile(...)`。
+7. 下一轮用户输入触发 `ConversationOrchestrator.processUserInput(...)`。
+8. `ContextMemorySystem.buildPromptMessages(...)` 读取最新 `SOUL.md` 并拼到基础 system prompt。
+9. `DeepSeekLLMProvider` 在外层协议中加入 SOUL 守卫规则，模型只把人设用于 `reply_text` 表达，不破坏 JSON/action 协议。
+
+### 4. 设计说明
+
+- 不迁移 `SOUL.md` 文件名：当前 L4 永久人设注入链路已经固定读取 `MdTemplates.FILE_SOUL`，保持大写文件名可以避免和现有上下文、ADB 调试习惯、清记忆逻辑发生分叉。
+- 结构化 JSON 与 Markdown 并存：JSON 负责 UI 可回读，Markdown 负责 LLM 可读性。这样比只写自然语言更稳定，也比只写 JSON 更容易让模型遵守。
+- 设置 UI 不直接依赖 `PermanentStore`：`FairySettingsProvider` 只做状态，保存动作由 `HomeStage` 持有 runtime 后执行，符合现有 Stage/运行时边界。
+- prompt 守卫放在 provider 层：`ContextMemorySystem` 继续负责组装记忆，`DeepSeekLLMProvider` 继续负责最终输出协议，避免把 JSON/action 协议散落到 `SOUL.md` 或 UI 模块。
+
+### 5. SDK/框架避坑指南
+
+- 视野跟随 UI 继续使用 Stage attachment，而不是 `WindowContainer`。本项目现有输入框也是通过 `AttachmentPanel` 挂到 HMD 子节点实现视野跟随，复用同一路径可以避免 Shared Space / Full Space 窗口行为差异。
+- attachment entity 需要在 `SpatialView.update` 中保证挂载到渲染树。只在 `attachments {}` 中声明 Compose 内容，不代表 3D 场景里已经有可见 entity。
+- 不要把 SOUL 个性化规则拼到结构化协议最后。最终 JSON 协议、工具路由和 action 枚举必须保留最高优先级，否则容易导致模型输出非 JSON 或 action_intent 失效。
+
+### 6. 验证记录
+
+- 验证命令：`./gradlew :app:assembleDebug :app:testDebugUnitTest --tests "com.example.matefairy01.persona.FairySoulProfileMarkdownCodecTest" --tests "com.example.matefairy01.memory.permanent.PermanentStoreSoulProfileTest" --no-daemon -Dkotlin.compiler.execution.strategy=in-process`
+- 结果：`BUILD SUCCESSFUL`
+- 格式检查：`git diff --check` 通过
+- 已知无关问题：全量 `:app:testDebugUnitTest` 仍会执行既有 Dump 反射测试和 WebSearch live 测试，其中部分失败与本阶段改动无关。

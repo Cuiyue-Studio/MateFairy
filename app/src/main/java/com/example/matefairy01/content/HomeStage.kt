@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,7 +43,10 @@ import com.example.matefairy01.perception.SpatialMeshManager
 import com.example.matefairy01.perception.SpatialMeshRuntimeDependencies
 import com.example.matefairy01.playerinteraction.PlayerFairyInteractionSystem
 import com.example.matefairy01.runtime.MateFairyRuntime
+import com.example.matefairy01.persona.FairySoulProfile
 import com.example.matefairy01.ui.FairyDialogueUI
+import com.example.matefairy01.ui.FairySettingsProvider
+import com.example.matefairy01.ui.FairySettingsUI
 import com.example.matefairy01.ui.GameUIContainer
 import com.example.matefairy01.ui.SharedUIManager
 import com.pico.spatial.core.ecs.Entity
@@ -95,6 +99,8 @@ private class HomeStageRuntimeState {
     var loadedRobotModelEntity: Entity? = null
     var dialogueAttachmentEntity: Entity? = null
     var userInputAttachmentEntity: Entity? = null
+    var settingsButtonAttachmentEntity: Entity? = null
+    var settingsPanelAttachmentEntity: Entity? = null
     var editorSceneEntity: Entity? = null
     var fairyBodyEntity: Entity? by mutableStateOf(null)
     var footballEntity: Entity? by mutableStateOf(null)
@@ -129,12 +135,21 @@ fun HomeStage() {
     val context = LocalContext.current
     val textInputProvider = SharedUIManager.textInputProvider
     val voiceInputProvider = SharedUIManager.voiceInputProvider
+    val fairySettingsProvider = SharedUIManager.fairySettingsProvider
     // runtime 由 SpatialApplication 在 onCreate 阶段一次性装配；
     // 此处仅取引用，避免每次进入 HomeStage 都重新创建（embedder / mcp 等也会被多重持有）。
     val runtime = remember(context) {
         (context.applicationContext as com.example.matefairy01.platform.SpatialApplication).runtime
     }
 
+    LaunchedEffect(runtime) {
+        val profile = withContext(Dispatchers.IO) {
+            runCatching { runtime.permanentStore.readSoulProfile() }
+                .onFailure { Log.w(HOME_STAGE_TAG, "read SOUL profile failed: ${it.message}") }
+                .getOrDefault(FairySoulProfile.default())
+        }
+        fairySettingsProvider.loadProfile(profile)
+    }
 
     // AI 对话状态
     var dialogueText by remember { mutableStateOf("") }
@@ -412,6 +427,36 @@ fun HomeStage() {
                 }
             }
 
+            attachments.entity("fairy_settings_button")?.let { buttonEntity ->
+                if (runtimeState.settingsButtonAttachmentEntity != buttonEntity) {
+                    runtimeState.settingsButtonAttachmentEntity = buttonEntity
+                    if (buttonEntity.components[TransformComponent::class.java] == null) {
+                        buttonEntity.components[TransformComponent::class.java] = TransformComponent()
+                    }
+                    hmdEntity.addChild(buttonEntity)
+                }
+
+                buttonEntity.components[TransformComponent::class.java]?.apply {
+                    setPosition(Vector3(0.34f, -0.28f, -0.72f))
+                    setQuaternion(Quat.identity())
+                }
+            }
+
+            attachments.entity("fairy_settings_panel")?.let { panelEntity ->
+                if (runtimeState.settingsPanelAttachmentEntity != panelEntity) {
+                    runtimeState.settingsPanelAttachmentEntity = panelEntity
+                    if (panelEntity.components[TransformComponent::class.java] == null) {
+                        panelEntity.components[TransformComponent::class.java] = TransformComponent()
+                    }
+                    hmdEntity.addChild(panelEntity)
+                }
+
+                panelEntity.components[TransformComponent::class.java]?.apply {
+                    setPosition(Vector3(0f, -0.08f, -0.72f))
+                    setQuaternion(Quat.identity())
+                }
+            }
+
             // 更新 HMD 位置：先转换到 rootEntity 所在坐标系，再驱动其子节点 HUD
             hmdTrackingData.hmdPose.let { pose ->
                 val transformComponent = hmdEntity.components[TransformComponent::class.java]
@@ -649,6 +694,52 @@ fun HomeStage() {
                 }
             }
 
+            AttachmentPanel(id = "fairy_settings_button") {
+                Box(
+                    modifier = Modifier
+                        .size(180.dp, 64.dp)
+                        .background(Color.Transparent),
+                    contentAlignment = Alignment.Center
+                ) {
+                    FairySettingsUI.SettingsEntryButton(
+                        onClick = { fairySettingsProvider.openPanel() }
+                    )
+                }
+            }
+
+            if (fairySettingsProvider.showSettingsPanel) {
+                AttachmentPanel(id = "fairy_settings_panel") {
+                    Box(
+                        modifier = Modifier
+                            .size(780.dp, 600.dp)
+                            .background(Color.Transparent),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        FairySettingsUI.SettingsPanel(
+                            profile = fairySettingsProvider.draftProfile,
+                            expandedPersonality = fairySettingsProvider.isPersonalityExpanded,
+                            isSaving = fairySettingsProvider.isSaving,
+                            statusMessage = fairySettingsProvider.statusMessage,
+                            onFairyNameChange = { fairySettingsProvider.updateFairyName(it) },
+                            onUserAddressChange = { fairySettingsProvider.updateUserAddress(it) },
+                            onTraitLevelSelected = { trait, level ->
+                                fairySettingsProvider.selectPersonalityLevel(trait, level)
+                            },
+                            onTogglePersonality = { fairySettingsProvider.togglePersonalityExpanded() },
+                            onSave = {
+                                saveFairySoulProfile(
+                                    scope = scope,
+                                    runtime = runtime,
+                                    settingsProvider = fairySettingsProvider,
+                                    profile = fairySettingsProvider.draftProfile
+                                )
+                            },
+                            onCancel = { fairySettingsProvider.closePanel() }
+                        )
+                    }
+                }
+            }
+
         }
     )
 }
@@ -793,6 +884,30 @@ private fun clearAllMemory(
             Log.d(HOME_STAGE_TAG, "all memory cleared")
         }.onFailure {
             Log.e(HOME_STAGE_TAG, "clear memory failed", it)
+        }
+    }
+}
+
+private fun saveFairySoulProfile(
+    scope: CoroutineScope,
+    runtime: MateFairyRuntime,
+    settingsProvider: FairySettingsProvider,
+    profile: FairySoulProfile
+) {
+    settingsProvider.startSaving()
+    scope.launch {
+        runCatching {
+            val normalized = profile.normalized()
+            withContext(Dispatchers.IO) {
+                runtime.permanentStore.writeSoulProfile(normalized)
+            }
+            normalized
+        }.onSuccess {
+            settingsProvider.markSaved(it)
+            Log.d(HOME_STAGE_TAG, "SOUL profile saved")
+        }.onFailure {
+            settingsProvider.markSaveFailed("保存失败，请稍后再试")
+            Log.e(HOME_STAGE_TAG, "save SOUL profile failed", it)
         }
     }
 }
