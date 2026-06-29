@@ -139,14 +139,10 @@ private class CarryAndUseObjectActionInstance(
     private var useTimerSeconds = 0f
     private var usedCount = 0
     private var finishTimerSeconds = 0f
-    private var debugElapsedSeconds = 0f
-    private var debugLastState: CarryUseState? = null
-    private var debugLastSampleSeconds = -1f
     private var activeSubject: Entity? = null
     private var previousSubjectRigidBodyMode: RigidBodyMode? = null
 
     override fun update(context: SceneUpdateContext): InteractionActionStatus {
-        debugElapsedSeconds += context.deltaTime
         val subject = InteractionEntityResolver.findActor(context.scene, request.subjectId)
         if (subject == null) {
             return InteractionActionStatus.FAILED
@@ -167,9 +163,6 @@ private class CarryAndUseObjectActionInstance(
         subject.components.set(FairyActionLockComponent(actionId))
         activeSubject = subject
         prepareSubjectForDirectMotion(subject)
-        if (debugLastState != state) {
-            debugLastState = state
-        }
 
         return when (state) {
             CarryUseState.APPROACHING -> {
@@ -182,10 +175,6 @@ private class CarryAndUseObjectActionInstance(
                 )
                 moveSubjectTowards(subject, subjectTransform, approachTarget, context.deltaTime, config)
                 faceDirection(subjectTransform, directionToTarget, context.deltaTime, config)
-                if (debugElapsedSeconds - debugLastSampleSeconds >= 1f) {
-                    debugLastSampleSeconds = debugElapsedSeconds
-                    val force = subject.components[PhysicsForceComponent::class.java]?.force
-                }
                 if (distance(subjectTransform.position, approachTarget) <= config.arrivalRadius) {
                     state = CarryUseState.PICKING_UP
                 }
@@ -329,44 +318,11 @@ private class PutDownObjectActionInstance(
                 velocity.linearVelocity = Vector3.ZERO
                 velocity.angularVelocity = Vector3.ZERO
             }
-            // #region debug-point A:put-down-drop-state
-            debugBoomboxDrop(
-                hypothesisId = "A",
-                location = "ObjectInteractionActionControllers.kt:PutDownObjectActionInstance.drop",
-                message = "[DEBUG] put-down drop applied",
-                data = mapOf(
-                    "actionId" to actionId,
-                    "subjectPos" to subjectTransform.position.debugString(),
-                    "subjectRb" to (subject.components[RigidBodyComponent::class.java]?.rigidBodyMode?.toString() ?: "null"),
-                    "subjectCollision" to (subject.components[CollisionComponent::class.java]?.collisionResponseMode?.toString() ?: "null"),
-                    "targetPos" to targetTransform.position.debugString(),
-                    "targetRb" to (target.components[RigidBodyComponent::class.java]?.rigidBodyMode?.toString() ?: "null"),
-                    "targetCollision" to (target.components[CollisionComponent::class.java]?.collisionResponseMode?.toString() ?: "null"),
-                    "targetVelocity" to (target.components[PhysicsVelocityComponent::class.java]?.linearVelocity?.debugString() ?: "null"),
-                    "hadFollow" to (follow != null)
-                )
-            )
-            // #endregion
             hasPutDown = true
         }
 
         finishTimerSeconds += context.deltaTime
         return if (finishTimerSeconds >= 0.35f) {
-            // #region debug-point B:put-down-complete
-            debugBoomboxDrop(
-                hypothesisId = "B",
-                location = "ObjectInteractionActionControllers.kt:PutDownObjectActionInstance.complete",
-                message = "[DEBUG] put-down action completing",
-                data = mapOf(
-                    "actionId" to actionId,
-                    "subjectPos" to subjectTransform.position.debugString(),
-                    "targetPos" to targetTransform.position.debugString(),
-                    "subjectVelocity" to (subject.components[PhysicsVelocityComponent::class.java]?.linearVelocity?.debugString() ?: "null"),
-                    "targetVelocity" to (target.components[PhysicsVelocityComponent::class.java]?.linearVelocity?.debugString() ?: "null"),
-                    "finishTimer" to finishTimerSeconds
-                )
-            )
-            // #endregion
             cleanupSubjectMotion(subject)
             InteractionActionStatus.COMPLETED
         } else {
@@ -382,21 +338,6 @@ private class PutDownObjectActionInstance(
     private fun cleanupSubjectMotion(subject: Entity) {
         subject.components.remove(FairyActionLockComponent::class.java)
         subjectMotion.restore(subject)
-        // #region debug-point B:put-down-cleanup
-        debugBoomboxDrop(
-            hypothesisId = "B",
-            location = "ObjectInteractionActionControllers.kt:PutDownObjectActionInstance.cleanup",
-            message = "[DEBUG] put-down subject cleanup restored",
-            data = mapOf(
-                "actionId" to actionId,
-                "subjectPos" to (subject.components[TransformComponent::class.java]?.position?.debugString() ?: "null"),
-                "subjectRb" to (subject.components[RigidBodyComponent::class.java]?.rigidBodyMode?.toString() ?: "null"),
-                "subjectCollision" to (subject.components[CollisionComponent::class.java]?.collisionResponseMode?.toString() ?: "null"),
-                "subjectVelocity" to (subject.components[PhysicsVelocityComponent::class.java]?.linearVelocity?.debugString() ?: "null"),
-                "hasRecovery" to (subject.components[ActionRecoveryGraceComponent::class.java] != null)
-            )
-        )
-        // #endregion
         activeSubject = null
     }
 }
@@ -523,30 +464,6 @@ private fun lerpAngle(a: Float, b: Float, t: Float): Float {
 private fun Float.toRadians() = this * PI.toFloat() / 180f
 
 private fun Float.toDegrees() = this * 180f / PI.toFloat()
-
-// #region debug-point DBG:boombox-drop-reporter
-private fun debugBoomboxDrop(
-    hypothesisId: String,
-    location: String,
-    message: String,
-    data: Map<String, Any>
-) {
-    com.example.matefairy01.debug.DebugRuntimeDependencies.reporter.post(
-        com.example.matefairy01.debug.DebugEvent(
-            sessionId = "boombox-drop-drift",
-            runId = "post-fix-direct-motion",
-            hypothesisId = hypothesisId,
-            location = location,
-            message = message,
-            data = data
-        )
-    )
-}
-
-private fun Vector3.debugString(): String {
-    return "%.3f,%.3f,%.3f".format(x, y, z)
-}
-// #endregion
 
 private const val TAG = "ObjectInteractionAction"
 private const val RUBBER_DUCK_ANIMATION_DURATION_MS = 1500L

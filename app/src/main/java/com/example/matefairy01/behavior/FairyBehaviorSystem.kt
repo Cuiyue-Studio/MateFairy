@@ -51,10 +51,6 @@ class FairyBehaviorSystem : System() {
     private var cachedFairyEntities: List<Entity> = emptyList()
     private var wasFollowEnabled: Boolean = true
     private var spatialMeshCastShape: ShapeResource? = null
-    // #region debug-point DBG:boombox-drop-watch-state
-    private val debugWatchRemainingSeconds = mutableMapOf<Int, Float>()
-    private val debugWatchSampleCooldownSeconds = mutableMapOf<Int, Float>()
-    // #endregion
 
     override fun update(context: SceneUpdateContext) {
         val dt = context.deltaTime
@@ -73,7 +69,6 @@ class FairyBehaviorSystem : System() {
         for (fairyEntity in fairyEntities) {
             val behavior = fairyEntity.components[FairyBehaviorComponent::class.java]!!
             val transform = fairyEntity.components[TransformComponent::class.java] ?: continue
-            val physicsForce = fairyEntity.components[PhysicsForceComponent::class.java]
             val visualTransform =
                 behavior.visualEntity?.components?.get(TransformComponent::class.java) ?: transform
 
@@ -203,17 +198,6 @@ class FairyBehaviorSystem : System() {
                         behavior.waitTimer = 0f
                         behavior.isWaitingForAnimation = false
                         behavior.currentTarget = getRandomTargetInInnerRadius(hmdPos, behavior.innerRadius, behavior.hoverHeight, behavior.zDeviationRange)
-                        // #region debug-point C:post-reset-target-from-waiting
-                        debugPostActionWatchEvent(
-                            fairyEntity = fairyEntity,
-                            behavior = behavior,
-                            transform = transform,
-                            visualTransform = visualTransform,
-                            hmdPos = hmdPos,
-                            hypothesisId = "C",
-                            message = "[DEBUG] post-reset wait expired and assigned random target"
-                        )
-                        // #endregion
                         avatarController?.requestMovingAnimation()
                     }
 
@@ -222,17 +206,6 @@ class FairyBehaviorSystem : System() {
                         behavior.waitTimer = 0f
                         behavior.isWaitingForAnimation = false
                         behavior.currentTarget = getFollowViewCenterTarget(hmdEntity, fairyEntity, behavior)
-                        // #region debug-point C:post-reset-follow-from-waiting
-                        debugPostActionWatchEvent(
-                            fairyEntity = fairyEntity,
-                            behavior = behavior,
-                            transform = transform,
-                            visualTransform = visualTransform,
-                            hmdPos = hmdPos,
-                            hypothesisId = "C",
-                            message = "[DEBUG] post-reset waiting switched to following"
-                        )
-                        // #endregion
                         avatarController?.requestMovingAnimation()
                     }
                 }
@@ -286,18 +259,6 @@ class FairyBehaviorSystem : System() {
                 animationFacingPolicy = animationFacingPolicy,
                 dt = dt
             )
-
-            // #region debug-point D:post-reset-motion-watch
-            samplePostActionWatch(
-                fairyEntity = fairyEntity,
-                behavior = behavior,
-                transform = transform,
-                visualTransform = visualTransform,
-                hmdPos = hmdPos,
-                physicsForce = physicsForce,
-                dt = dt
-            )
-            // #endregion
         }
         wasFollowEnabled = followEnabled
     }
@@ -361,24 +322,6 @@ class FairyBehaviorSystem : System() {
         }
         applyFairyYaw(transform, visualTransform, behavior)
 
-        // #region debug-point D:recovery-grace-tick
-        debugPostActionWatchEvent(
-            fairyEntity = fairyEntity,
-            behavior = behavior,
-            transform = transform,
-            visualTransform = visualTransform,
-            hmdPos = null,
-            hypothesisId = "D",
-            message = "[DEBUG] action recovery grace tick",
-            extra = mapOf(
-                "remaining" to recovery.remainingSeconds,
-                "anchor" to anchorPosition.debugString(),
-                "collision" to (fairyEntity.components[CollisionComponent::class.java]?.collisionResponseMode?.toString() ?: "null"),
-                "rb" to (fairyEntity.components[RigidBodyComponent::class.java]?.rigidBodyMode?.toString() ?: "null")
-            )
-        )
-        // #endregion
-
         if (recovery.remainingSeconds <= 0f) {
             prepareScriptDrivenFairy(fairyEntity)
             transform.position = anchorPosition
@@ -395,20 +338,6 @@ class FairyBehaviorSystem : System() {
             behavior.inertiaVelocity = Vector3.ZERO
             behavior.isInertiaSliding = false
             fairyEntity.components.remove(ActionRecoveryGraceComponent::class.java)
-            // #region debug-point D:recovery-grace-end
-            debugPostActionWatchEvent(
-                fairyEntity = fairyEntity,
-                behavior = behavior,
-                transform = transform,
-                visualTransform = visualTransform,
-                hmdPos = null,
-                hypothesisId = "D",
-                message = "[DEBUG] action recovery grace ended",
-                extra = mapOf(
-                    "anchor" to anchorPosition.debugString()
-                )
-            )
-            // #endregion
         }
         return true
     }
@@ -902,23 +831,6 @@ class FairyBehaviorSystem : System() {
         visualTransform.position = fairyPos
           applyFairyYaw(transform, visualTransform, behavior)
         avatarController?.requestStandbyAnimation()
-        // #region debug-point C:post-action-reset
-        val debugKey = java.lang.System.identityHashCode(fairyEntity)
-        debugWatchRemainingSeconds[debugKey] = POST_ACTION_DEBUG_WATCH_SECONDS
-        debugWatchSampleCooldownSeconds[debugKey] = 0f
-        debugPostActionWatchEvent(
-            fairyEntity = fairyEntity,
-            behavior = behavior,
-            transform = transform,
-            visualTransform = visualTransform,
-            hmdPos = null,
-            hypothesisId = "C",
-            message = "[DEBUG] post-action behavior state reset",
-            extra = mapOf(
-                "idleSeconds" to POST_ACTION_IDLE_SECONDS
-            )
-        )
-        // #endregion
     }
 
     private fun ensureCarryingMovementTarget(
@@ -1030,103 +942,6 @@ class FairyBehaviorSystem : System() {
         velocity.angularVelocity = Vector3.ZERO
     }
 
-    // #region debug-point DBG:boombox-drop-behavior-reporter
-    private fun samplePostActionWatch(
-        fairyEntity: Entity,
-        behavior: FairyBehaviorComponent,
-        transform: TransformComponent,
-        visualTransform: TransformComponent,
-        hmdPos: Vector3,
-        physicsForce: PhysicsForceComponent?,
-        dt: Float
-    ) {
-        val key = java.lang.System.identityHashCode(fairyEntity)
-        val remaining = debugWatchRemainingSeconds[key] ?: return
-        val nextRemaining = remaining - dt
-        if (nextRemaining <= 0f) {
-            debugWatchRemainingSeconds.remove(key)
-            debugWatchSampleCooldownSeconds.remove(key)
-            return
-        }
-        debugWatchRemainingSeconds[key] = nextRemaining
-        val cooldown = (debugWatchSampleCooldownSeconds[key] ?: 0f) - dt
-        val velocity = fairyEntity.components[PhysicsVelocityComponent::class.java]?.linearVelocity
-        val force = physicsForce?.force
-        val shouldLogSpike =
-            (velocity?.magnitudeOrZero() ?: 0f) >= POST_ACTION_DEBUG_VELOCITY_SPIKE ||
-                (force?.magnitudeOrZero() ?: 0f) >= POST_ACTION_DEBUG_FORCE_SPIKE
-        if (cooldown > 0f && !shouldLogSpike) {
-            debugWatchSampleCooldownSeconds[key] = cooldown
-            return
-        }
-        debugWatchSampleCooldownSeconds[key] = POST_ACTION_DEBUG_SAMPLE_SECONDS
-        debugPostActionWatchEvent(
-            fairyEntity = fairyEntity,
-            behavior = behavior,
-            transform = transform,
-            visualTransform = visualTransform,
-            hmdPos = hmdPos,
-            hypothesisId = if (shouldLogSpike) "D" else "C",
-            message = if (shouldLogSpike) {
-                "[DEBUG] post-action velocity/force spike"
-            } else {
-                "[DEBUG] post-action watch sample"
-            },
-            extra = mapOf(
-                "remaining" to nextRemaining,
-                "velocity" to (velocity?.debugString() ?: "null"),
-                "velocityMag" to (velocity?.magnitudeOrZero() ?: 0f),
-                "force" to (force?.debugString() ?: "null"),
-                "forceMag" to (force?.magnitudeOrZero() ?: 0f)
-            )
-        )
-    }
-
-    private fun debugPostActionWatchEvent(
-        fairyEntity: Entity,
-        behavior: FairyBehaviorComponent,
-        transform: TransformComponent,
-        visualTransform: TransformComponent,
-        hmdPos: Vector3?,
-        hypothesisId: String,
-        message: String,
-        extra: Map<String, Any> = emptyMap()
-    ) {
-        val velocity = fairyEntity.components[PhysicsVelocityComponent::class.java]?.linearVelocity
-        val data = mutableMapOf<String, Any>(
-            "entityKey" to java.lang.System.identityHashCode(fairyEntity),
-            "state" to behavior.state.name,
-            "pos" to transform.position.debugString(),
-            "visualPos" to visualTransform.position.debugString(),
-            "visualDelta" to visualTransform.position.minus(transform.position).debugString(),
-            "target" to (behavior.currentTarget?.debugString() ?: "null"),
-            "waitTimer" to behavior.waitTimer,
-            "velocity" to (velocity?.debugString() ?: "null"),
-            "velocityMag" to (velocity?.magnitudeOrZero() ?: 0f),
-            "hasRecovery" to (fairyEntity.components[ActionRecoveryGraceComponent::class.java] != null),
-            "hasActionLock" to (fairyEntity.components[FairyActionLockComponent::class.java] != null)
-        )
-        if (hmdPos != null) {
-            data["hmdPos"] = hmdPos.debugString()
-            data["distance2D"] = horizontalDistance(transform.position, hmdPos)
-        }
-        data.putAll(extra)
-        com.example.matefairy01.debug.DebugRuntimeDependencies.reporter.post(
-            com.example.matefairy01.debug.DebugEvent(
-                sessionId = "boombox-drop-drift",
-                runId = "post-fix-direct-motion",
-                hypothesisId = hypothesisId,
-                location = "FairyBehaviorSystem.kt",
-                message = message,
-                data = data
-            )
-        )
-    }
-
-    private fun Vector3.debugString(): String {
-        return "%.3f,%.3f,%.3f".format(x, y, z)
-    }
-
     private fun Vector3.minus(other: Vector3): Vector3 {
         return Vector3(x - other.x, y - other.y, z - other.z)
     }
@@ -1138,7 +953,6 @@ class FairyBehaviorSystem : System() {
     private fun Vector3.isFiniteVector(): Boolean {
         return x.isFinite() && y.isFinite() && z.isFinite()
     }
-    // #endregion
 
     private fun horizontalDistance(a: Vector3, b: Vector3): Float {
         val dx = a.x - b.x
@@ -1224,10 +1038,6 @@ class FairyBehaviorSystem : System() {
         private const val FOLLOW_TARGET_REFRESH_MARGIN = 0.45f
         private const val RESIDENCE_IDLE_REFRESH_SECONDS = 2.8f
         private const val POST_ACTION_IDLE_SECONDS = 1.2f
-        private const val POST_ACTION_DEBUG_WATCH_SECONDS = 6.0f
-        private const val POST_ACTION_DEBUG_SAMPLE_SECONDS = 0.25f
-        private const val POST_ACTION_DEBUG_VELOCITY_SPIKE = 0.35f
-        private const val POST_ACTION_DEBUG_FORCE_SPIKE = 5.0f
         private const val DEFAULT_BEHAVIOR_FAIRY_ACTOR_ID = "fairy"
         private val DEFAULT_HMD_FORWARD = Vector3(0f, 0f, -1f)
     }

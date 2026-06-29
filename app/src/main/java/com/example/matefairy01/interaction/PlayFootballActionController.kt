@@ -50,7 +50,6 @@ private class PlayFootballActionInstance(
     private val subjectMotion = ActionSubjectMotionTemplate()
     private var kickAnimationStarted = false
     private var postKickRetreatTarget: Vector3? = null
-    private var debugLastSampleSeconds = -1f
 
     override fun update(context: SceneUpdateContext): InteractionActionStatus {
         elapsedSeconds += context.deltaTime
@@ -63,13 +62,6 @@ private class PlayFootballActionInstance(
             ?: return InteractionActionStatus.FAILED
         val footballTransform = football.components[TransformComponent::class.java]
             ?: return InteractionActionStatus.FAILED
-        debugSample(
-            state = state,
-            subject = subject,
-            subjectTransform = subjectTransform,
-            footballTransform = footballTransform,
-            status = "tick"
-        )
 
         if (elapsedSeconds >= config.maxActionSeconds) {
             cleanupSubjectMotion(subject)
@@ -155,13 +147,6 @@ private class PlayFootballActionInstance(
                 kickFootball(football, subjectForward)
                 clearSubjectForce(subject)
                 postKickRetreatTarget = buildPostKickRetreatTarget(footballTransform.position, subjectForward)
-                debugSample(
-                    state = state,
-                    subject = subject,
-                    subjectTransform = subjectTransform,
-                    footballTransform = footballTransform,
-                    status = "kick"
-                )
                 state = PlayFootballState.FINISHING
                 InteractionActionStatus.RUNNING
             }
@@ -183,13 +168,6 @@ private class PlayFootballActionInstance(
                     finishTimerSeconds >= config.finishDelaySeconds &&
                     postKickRetreatTarget == null
                 ) {
-                    debugSample(
-                        state = state,
-                        subject = subject,
-                        subjectTransform = subjectTransform,
-                        footballTransform = footballTransform,
-                        status = "cleanup"
-                    )
                     cleanupSubjectMotion(subject)
                     InteractionActionStatus.COMPLETED
                 } else {
@@ -293,68 +271,13 @@ private class PlayFootballActionInstance(
         activeFootball = null
     }
 
-    // #region debug-point A:play-football-state
-    private fun debugSample(
-        state: PlayFootballState,
-        subject: com.pico.spatial.core.ecs.Entity,
-        subjectTransform: TransformComponent,
-        footballTransform: TransformComponent,
-        status: String
-    ) {
-        if (status == "tick" && elapsedSeconds - debugLastSampleSeconds < 0.5f) return
-        if (status == "tick") debugLastSampleSeconds = elapsedSeconds
-        val rigidBody = subject.components[RigidBodyComponent::class.java]
-        val collision = subject.components[com.pico.spatial.core.ecs.CollisionComponent::class.java]
-        val velocity = subject.components[PhysicsVelocityComponent::class.java]
-        debugPost(
-            hypothesisId = "A",
-            location = "PlayFootballActionController",
-            msg = "[DEBUG] play-football $status",
-            data = mapOf(
-                "state" to state.name,
-                "elapsed" to elapsedSeconds,
-                "finishTimer" to finishTimerSeconds,
-                "subjectX" to subjectTransform.position.x,
-                "subjectY" to subjectTransform.position.y,
-                "subjectZ" to subjectTransform.position.z,
-                "footballX" to footballTransform.position.x,
-                "footballY" to footballTransform.position.y,
-                "footballZ" to footballTransform.position.z,
-                "distance" to distance(subjectTransform.position, footballTransform.position),
-                "retreatSet" to (postKickRetreatTarget != null),
-                "retreatX" to (postKickRetreatTarget?.x ?: 0f),
-                "retreatY" to (postKickRetreatTarget?.y ?: 0f),
-                "retreatZ" to (postKickRetreatTarget?.z ?: 0f),
-                "rigidBodyMode" to (rigidBody?.rigidBodyMode?.name ?: "none"),
-                "collisionMode" to (collision?.collisionResponseMode?.name ?: "none"),
-                "linearVelocity" to (velocity?.linearVelocity?.let { distance(Vector3.ZERO, it) } ?: -1f),
-                "angularVelocity" to (velocity?.angularVelocity?.let { distance(Vector3.ZERO, it) } ?: -1f)
-            )
-        )
-    }
-    // #endregion
-
     private companion object {
         private const val TAG = "PlayFootballAction"
         private const val DEFAULT_FOOTBALL_OBJECT_ID = "football"
         private const val MIN_TARGET_Y = -0.5f
         private const val MIN_SAFE_APPROACH_DISTANCE = 0.22f
-        private const val DEBUG_URL = "http://10.71.200.105:7777/event"
     }
 }
-
-// #region debug-point A:reporter
-private fun debugPost(hypothesisId: String, location: String, msg: String, data: Map<String, Any>) {
-    com.example.matefairy01.debug.DebugRuntimeDependencies.reporter.post(
-        com.example.matefairy01.debug.DebugEvent(
-            hypothesisId = hypothesisId,
-            location = location,
-            message = msg,
-            data = data
-        )
-    )
-}
-// #endregion
 
 private enum class PlayFootballState {
     DETECTING,

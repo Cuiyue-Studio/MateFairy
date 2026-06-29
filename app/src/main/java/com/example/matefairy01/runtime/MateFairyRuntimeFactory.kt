@@ -11,8 +11,6 @@ import com.example.matefairy01.audio.MusicModule
 import com.example.matefairy01.avatar.DefaultAvatarController
 import com.example.matefairy01.behavior.FairyFollowControlModule
 import com.example.matefairy01.config.AppConfig
-import com.example.matefairy01.debug.BufferedHttpDebugEventReporter
-import com.example.matefairy01.debug.DebugRuntimeDependencies
 import com.example.matefairy01.emotion.AvatarEmotionRenderer
 import com.example.matefairy01.emotion.EmotionEngine
 import com.example.matefairy01.interaction.InteractionActionRuntimeDependencies
@@ -58,13 +56,6 @@ import com.example.matefairy01.playerinteraction.PlayerFairyInteractionRuntimeDe
 object MateFairyRuntimeFactory {
 
     fun create(context: Context, appConfig: AppConfig): MateFairyRuntime {
-        // ----- 基础设施 -----
-        // #region debug-point DBG:boombox-drop-drift-reporter
-        DebugRuntimeDependencies.reporter = BufferedHttpDebugEventReporter(
-            endpoint = "http://10.4.93.9:7777/event"
-        )
-        // #endregion
-
         val localTools = buildList {
             if (appConfig.webSearch.enabled) {
                 add(com.example.matefairy01.tools.WebSearchTool(appConfig.webSearch))

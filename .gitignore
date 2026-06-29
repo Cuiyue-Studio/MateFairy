@@ -2,6 +2,8 @@
 .gradle
 /local.properties
 .idea/
+.vscode/
+.kotlin/
 .DS_Store
 /build
 /captures
@@ -19,6 +21,7 @@ editor-asset/build/
 *.aar
 *.bundle
 *.jar
+!gradle/wrapper/gradle-wrapper.jar
 
 # Cache data
 .CacheData/
@@ -32,3 +35,36 @@ emu-last-feature-flags.protobuf
 # Local device keys
 adbkey
 adbkey.pub
+
+# Local Agent/dev reference material, kept outside GitHub game source
+.trae/
+AGENTS.md
+documentation/
+templates/
+项目沉淀资料/
+踩坑经验/
+MIGRATION_TO_WINDOWS_AGENT_PROMPT.md
+PROJECT_SUMMARY.md
+spatial_sdk_feedback.md
+
+# One-off debug notes and exploration scripts
+debug-*.md
+check_glb.py
+dump*.kt
+find_class.sh
+find_window_methods.kt
+init_ai.sh
+parse_glb.py
+parse_glb_bbox.py
+parse_gltf.py
+run_test.sh
+test*.kt
+
+# One-off exploratory Kotlin probes
+app/src/main/java/com/example/matefairy01/CheckMaterial.kt
+app/src/main/java/com/example/matefairy01/FixAABB.kt
+app/src/main/java/com/example/test/
+app/src/test/java/Dump*.kt
+app/src/test/java/TestLLM.kt
+app/src/test/java/com/example/matefairy01/Dump*.kt
+app/src/test/java/com/example/test/

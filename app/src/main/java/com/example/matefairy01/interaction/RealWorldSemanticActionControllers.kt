@@ -19,9 +19,6 @@ import com.pico.spatial.core.ecs.simulation.CollisionResponseMode
 import com.pico.spatial.core.math.EulerAngles
 import com.pico.spatial.core.math.Vector3
 import com.pico.spatial.sense.base.SemanticLabelType
-import java.net.HttpURLConnection
-import java.net.URL
-import kotlin.concurrent.thread
 import kotlin.math.atan2
 import kotlin.math.sqrt
 
@@ -75,9 +72,6 @@ private class StayOnSemanticObjectActionInstance(
 
     override fun update(context: SceneUpdateContext): InteractionActionStatus {
         if (request.source == InteractionActionSource.RANDOM) {
-            // #region debug-point B:stay-chair-random-reject
-            debugChairChain("B", "RealWorldSemanticActionControllers.kt:update", "StayOnChair reject random", "actionId" to request.actionId)
-            // #endregion
             return InteractionActionStatus.FAILED
         }
         elapsedSeconds += context.deltaTime
@@ -89,9 +83,6 @@ private class StayOnSemanticObjectActionInstance(
         activeSubject = subject
         subject.components.set(FairyActionLockComponent(actionId))
 
-        // #region debug-point C:stay-chair-update-state
-        debugChairChain("C", "RealWorldSemanticActionControllers.kt:update", "StayOnChair update", "state" to state, "elapsed" to elapsedSeconds, "subjectPos" to transform.position, "source" to request.source)
-        // #endregion
         return when (state) {
             StayOnSemanticObjectState.RESOLVING_TARGET -> resolveTarget(transform)
             StayOnSemanticObjectState.RESOLVING_SURFACE -> resolveSurface(context)
@@ -125,9 +116,6 @@ private class StayOnSemanticObjectActionInstance(
             maxDistance = config.maxSearchDistance,
             purpose = purpose
         )
-        // #region debug-point C:stay-chair-resolve-target
-        debugChairChain("C", "RealWorldSemanticActionControllers.kt:resolveTarget", "StayOnChair resolve target", "semantic" to semantic, "origin" to transform.position, "maxDistance" to config.maxSearchDistance, "found" to (resolved != null), "targetPos" to resolved?.position, "targetSource" to resolved?.source, "anchor" to resolved?.anchorUUID)
-        // #endregion
         if (resolved != null) {
             target = resolved
             state = StayOnSemanticObjectState.RESOLVING_SURFACE
@@ -167,9 +155,6 @@ private class StayOnSemanticObjectActionInstance(
         }
         state = StayOnSemanticObjectState.MOVING_TO_TARGET
         RealWorldSemanticRuntimeDependencies.query.finishSemanticScanRequest()
-        // #region debug-point D:stay-chair-resolve-surface
-        debugChairChain("D", "RealWorldSemanticActionControllers.kt:resolveSurface", "StayOnChair resolve surface", "semanticPos" to resolvedTarget.position, "surface" to placement?.source, "surfacePos" to placement?.position, "finalPos" to surfaceTargetPosition, "confidence" to placement?.confidence)
-        // #endregion
         Log.d(
             TAG,
             "Resolved semantic surface: semantic=$semantic, " +
@@ -193,9 +178,6 @@ private class StayOnSemanticObjectActionInstance(
         motionTemplate.prepare(subject)
         val direction = direction(transform.position, targetPosition)
         val distanceToTarget = distance(transform.position, targetPosition)
-        // #region debug-point D:stay-chair-move
-        debugChairChain("D", "RealWorldSemanticActionControllers.kt:moveToTarget", "StayOnChair move", "current" to transform.position, "target" to targetPosition, "distance" to distanceToTarget, "arrivalRadius" to config.arrivalRadius, "directionNull" to (direction == null))
-        // #endregion
         if (direction == null || distanceToTarget <= config.arrivalRadius) {
             state = StayOnSemanticObjectState.SETTLING
             return InteractionActionStatus.RUNNING
@@ -231,16 +213,10 @@ private class StayOnSemanticObjectActionInstance(
             )
         )
         subject.components.remove(FairyActionLockComponent::class.java)
-        // #region debug-point E:stay-chair-residence-entered
-        debugChairChain("E", "RealWorldSemanticActionControllers.kt:settleOnTarget", "StayOnChair residence entered", "finalPosition" to finalPosition, "anchor" to resolvedTarget.anchorUUID, "semantic" to semantic, "hasResidence" to (subject.components[FairySemanticResidenceComponent::class.java] != null))
-        // #endregion
         return InteractionActionStatus.COMPLETED
     }
 
     private fun fail(reason: String): InteractionActionStatus {
-        // #region debug-point B:stay-chair-fail
-        debugChairChain("B", "RealWorldSemanticActionControllers.kt:fail", "StayOnChair failed", "reason" to reason, "state" to state, "elapsed" to elapsedSeconds, "target" to target?.position, "surfaceTarget" to surfaceTargetPosition)
-        // #endregion
         activeSubject?.let { subject ->
             motionTemplate.restore(subject)
             subject.components.remove(FairyActionLockComponent::class.java)
@@ -348,24 +324,3 @@ private fun lerpAngle(a: Float, b: Float, t: Float): Float {
 private fun Float.toDegrees() = this * 180f / kotlin.math.PI.toFloat()
 
 private const val TAG = "RealWorldSemanticAction"
-
-// #region debug-point C:real-world-action-reporter
-private fun debugChairChain(hypothesisId: String, location: String, msg: String, vararg fields: Pair<String, Any?>) {
-    thread(start = true) {
-        runCatching {
-            val data = fields.joinToString(",") { "\"${it.first}\":\"${it.second.toString().replace("\\", "\\\\").replace("\"", "\\\"")}\"" }
-            val body = "{\"sessionId\":\"chair-command-chain\",\"runId\":\"pre-fix\",\"hypothesisId\":\"$hypothesisId\",\"location\":\"$location\",\"msg\":\"[DEBUG] $msg\",\"data\":{$data},\"ts\":${System.currentTimeMillis()}}"
-            val connection = (URL("http://10.4.47.36:7777/event").openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                setRequestProperty("Content-Type", "application/json")
-                doOutput = true
-                connectTimeout = 500
-                readTimeout = 500
-            }
-            connection.outputStream.use { it.write(body.toByteArray()) }
-            connection.inputStream.close()
-            connection.disconnect()
-        }
-    }
-}
-// #endregion

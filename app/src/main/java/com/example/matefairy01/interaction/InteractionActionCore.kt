@@ -7,9 +7,6 @@ import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.ecs.EntityQueryCondition
 import com.pico.spatial.core.ecs.Scene
 import com.pico.spatial.core.ecs.SceneUpdateContext
-import java.net.HttpURLConnection
-import java.net.URL
-import kotlin.concurrent.thread
 
 enum class InteractionActorRole {
     FAIRY,
@@ -97,17 +94,10 @@ class InteractionActionRegistry {
     fun register(controller: InteractionActionController) {
         controllers[controller.actionId] = controller
         Log.d(TAG, "Registered interaction action: ${controller.actionId}")
-        // #region debug-point B:interaction-controller-register
-        debugChairChain("B", "InteractionActionCore.kt:InteractionActionRegistry.register", "Interaction controller register", "actionId" to controller.actionId, "controller" to controller::class.java.simpleName)
-        // #endregion
     }
 
     fun get(actionId: String): InteractionActionController? {
-        val controller = controllers[actionId]
-        // #region debug-point B:interaction-controller-get
-        debugChairChain("B", "InteractionActionCore.kt:InteractionActionRegistry.get", "Interaction controller get", "actionId" to actionId, "controller" to (controller?.javaClass?.simpleName ?: "null"), "registered" to controllers.keys.sorted().joinToString("|"))
-        // #endregion
-        return controller
+        return controllers[actionId]
     }
 
     private companion object {
@@ -121,30 +111,18 @@ class InteractionActionRequestBus {
     @Synchronized
     fun enqueue(request: InteractionActionRequest): Boolean {
         if (request.actionId.isBlank()) {
-            // #region debug-point B:request-bus-reject-blank
-            debugChairChain("B", "InteractionActionCore.kt:enqueue", "RequestBus reject blank", "actionId" to request.actionId)
-            // #endregion
             return false
         }
         if (request.source == InteractionActionSource.RANDOM && FairySemanticResidenceRuntime.isActive()) {
             Log.d(TAG, "Ignore random action=${request.actionId}; fairy is in semantic residence")
-            // #region debug-point B:request-bus-reject-random-residence
-            debugChairChain("B", "InteractionActionCore.kt:enqueue", "RequestBus reject random residence", "actionId" to request.actionId, "source" to request.source)
-            // #endregion
             return false
         }
         val lockState = InteractionActionRuntimeDependencies.lockState
         if (lockState.isLocked && !lockState.canPreempt(request)) {
             Log.d(TAG, "Ignore action=${request.actionId}; action lock is active")
-            // #region debug-point B:request-bus-reject-lock
-            debugChairChain("B", "InteractionActionCore.kt:enqueue", "RequestBus reject lock", "actionId" to request.actionId, "source" to request.source, "currentAction" to lockState.currentActionId, "currentController" to lockState.currentControllerId)
-            // #endregion
             return false
         }
         pendingRequests.addLast(request)
-        // #region debug-point B:request-bus-enqueue
-        debugChairChain("B", "InteractionActionCore.kt:enqueue", "RequestBus enqueue", "actionId" to request.actionId, "controllerId" to request.controllerId, "source" to request.source, "subjectId" to request.subjectId, "queueSize" to pendingRequests.size)
-        // #endregion
         return true
     }
 
@@ -153,9 +131,6 @@ class InteractionActionRequestBus {
         if (pendingRequests.isEmpty()) return emptyList()
         val drained = pendingRequests.toList()
         pendingRequests.clear()
-        // #region debug-point B:request-bus-drain
-        debugChairChain("B", "InteractionActionCore.kt:drain", "RequestBus drain", "count" to drained.size, "actions" to drained.joinToString("|") { it.actionId + ":" + it.source.name })
-        // #endregion
         return drained
     }
 
@@ -319,24 +294,3 @@ object InteractionEntityResolver {
 }
 
 const val DEFAULT_FAIRY_ACTOR_ID = "fairy"
-
-// #region debug-point B:interaction-core-reporter
-private fun debugChairChain(hypothesisId: String, location: String, msg: String, vararg fields: Pair<String, Any?>) {
-    thread(start = true) {
-        runCatching {
-            val data = fields.joinToString(",") { "\"${it.first}\":\"${it.second.toString().replace("\\", "\\\\").replace("\"", "\\\"")}\"" }
-            val body = "{\"sessionId\":\"chair-command-chain\",\"runId\":\"pre-fix\",\"hypothesisId\":\"$hypothesisId\",\"location\":\"$location\",\"msg\":\"[DEBUG] $msg\",\"data\":{$data},\"ts\":${System.currentTimeMillis()}}"
-            val connection = (URL("http://10.4.47.36:7777/event").openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                setRequestProperty("Content-Type", "application/json")
-                doOutput = true
-                connectTimeout = 500
-                readTimeout = 500
-            }
-            connection.outputStream.use { it.write(body.toByteArray()) }
-            connection.inputStream.close()
-            connection.disconnect()
-        }
-    }
-}
-// #endregion

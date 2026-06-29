@@ -1,2 +1,0 @@
-Spatial UI supports multiple interaction methods, including natural interactions involving the user's eyes, hands, and other body parts, as well as interactions via various external devices. The default eye-hand interaction in the system enables users to quickly select targets through gaze and pinch operations. Additionally, traditional devices such as keyboards, mice, controllers, and similar devices can also support a wider range of application content.
-
