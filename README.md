@@ -1,6 +1,6 @@
 # MateFairy
 
-MateFairy 是一个面向 PICO OS 6 的空间陪伴应用。它把一个会飞行、会看向玩家、会被触碰打断、能和现实/虚拟物体互动的精灵放进 Full Space 场景里，再用 LLM、MCP 工具、长期记忆和人格设定把它从一个 3D 模型推进到一个有陪伴感的空间角色。
+MateFairy 是一款运行在 PICO OS 6 的 3D AI 陪伴类应用，这是一只能够随时随地跟随玩家、能够与玩家对话和理解玩家意图，能通过解析语义执行玩家指令、拥有长期记忆能力，还可以跟现实与虚拟物体交互、可被玩家触碰的虚拟陪伴精灵
 
 当前工程以 Kotlin + Jetpack Compose + PICO Spatial SDK 为基础，主场景运行在 Stage 中，UI 通过 Spatial Attachment 和 Planar WindowContainer 呈现，3D 内容由 Spatial Editor bundle、GLB/USDZ 资源和 ECS 系统共同驱动。
 
